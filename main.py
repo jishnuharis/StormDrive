@@ -25,8 +25,8 @@ DB_FILE   = Path("metadata.json")
 PAGE_SIZE = 10
 
 # ConversationHandler states
-WAIT_NEW_FOLDER   = 1
-WAIT_STORE_FILE   = 2
+WAIT_NEW_FOLDER = 1
+WAIT_STORE_FILE = 2
 
 # ---------------------------------------------------------------------------
 # In-memory user state
