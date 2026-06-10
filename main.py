@@ -21,7 +21,7 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ARCHIVE_CHAT_ID = int(os.environ["ARCHIVE_CHAT_ID"])
 OWNER_ID = int(os.environ["OWNER_ID"])
 
-DB_FILE   = Path("metadata.json")
+DB_FILE = Path("metadata.json")
 PAGE_SIZE = 10
 
 # ConversationHandler states
