@@ -13,7 +13,7 @@ from telegram.ext import (
 )
 
 # ---------------------------------------------------------------------------
-# Config  (swap to os.getenv in production)
+# Config
 # ---------------------------------------------------------------------------
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
@@ -32,8 +32,8 @@ WAIT_STORE_FILE = 2
 # ---------------------------------------------------------------------------
 # user_state[user_id] = {
 #   "mode":   "store" | "retrieve" | "delete",
-#   "folder": str | None,          # currently selected folder (None = folder list)
-#   "page":   int,                 # current pagination page (0-indexed)
+#   "path":   "Root/Videos/Edits",
+#   "page":   int,
 # }
 user_state: dict[int, dict] = {}
 
@@ -56,12 +56,65 @@ def save_db(data: dict) -> None:
     DB_FILE.write_text(json.dumps(data, indent=2))
 
 
-def get_folders(db: dict) -> list[str]:
-    return sorted({item.get("folder", "Root") for item in db.values()})
+def normalize_path(path: str | None) -> str:
+    """Ensure every path is 'Root' or 'Root/...', without duplicates."""
+    if not path:
+        return "Root"
+    path = path.strip().strip("/")
+    if path == "" or path == "Root":
+        return "Root"
+    # Remove leading 'Root/' if present
+    if path.startswith("Root/"):
+        path = path[5:]
+    # Collapse repeated slashes
+    parts = [p for p in path.split("/") if p]
+    return "Root" if not parts else "Root/" + "/".join(parts)
 
 
-def get_files_in_folder(db: dict, folder: str) -> list[dict]:
-    return [item for item in db.values() if item.get("folder", "Root") == folder]
+def get_subfolders_for_path(db: dict, current_path: str) -> list[str]:
+    """
+    Returns immediate child folder names under current_path.
+    """
+    paths = {normalize_path(item.get("folder", "Root")) for item in db.values()}
+    current_path = normalize_path(current_path)
+    prefix = current_path.rstrip("/") + "/"
+    children: set[str] = set()
+
+    for p in paths:
+        if not p.startswith(prefix):
+            continue
+        rest = p[len(prefix):]
+        if not rest:
+            continue
+        first_segment = rest.split("/", 1)[0]
+        children.add(first_segment)
+
+    return sorted(children)
+
+
+def get_files_in_folder(db: dict, folder_path: str) -> list[dict]:
+    folder_path = normalize_path(folder_path)
+    return [item for item in db.values() if normalize_path(item.get("folder", "Root")) == folder_path]
+
+
+def delete_folder_tree(db: dict, folder_path: str) -> list[str]:
+    """
+    Deletes all DB entries under folder_path (including subfolders).
+    Returns list of DB keys that were deleted so caller can delete messages.
+    """
+    folder_path = normalize_path(folder_path)
+    prefix = folder_path.rstrip("/") + "/"
+    keys_to_delete: list[str] = []
+
+    for k, item in db.items():
+        fp = normalize_path(item.get("folder", "Root"))
+        if fp == folder_path or fp.startswith(prefix):
+            keys_to_delete.append(k)
+
+    for k in keys_to_delete:
+        del db[k]
+
+    return keys_to_delete
 
 
 # ---------------------------------------------------------------------------
@@ -85,29 +138,22 @@ async def deny(update: Update) -> None:
 # ---------------------------------------------------------------------------
 
 def build_paginated_keyboard(
-    items: list[tuple[str, str]],   # list of (label, callback_data)
+    items: list[tuple[str, str]],
     page: int,
     extra_top_rows: list | None = None,
     extra_bottom_rows: list | None = None,
 ) -> InlineKeyboardMarkup:
-    """
-    Renders up to PAGE_SIZE items per page.
-    Navigation row (◀ / ▶) is added only when needed.
-    extra_top_rows   – inserted before the item rows.
-    extra_bottom_rows – inserted after nav row.
-    """
     total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
 
     start = page * PAGE_SIZE
-    chunk = items[start : start + PAGE_SIZE]
+    chunk = items[start: start + PAGE_SIZE]
 
     keyboard = list(extra_top_rows or [])
 
     for label, cb in chunk:
         keyboard.append([InlineKeyboardButton(label, callback_data=cb)])
 
-    # Navigation row
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀", callback_data=f"page:{page - 1}"))
@@ -130,17 +176,21 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def folder_list_keyboard(folders: list[str], page: int, mode: str) -> InlineKeyboardMarkup:
-    """
-    In delete mode:
-      - Just show folders (📁 <name>), clicking them opens a second menu
-        (open / delete) for that folder.
-    In store/retrieve:
-      - 📁 <folder> -> folder:<name>
-    """
-    items = [(f"📁 {f}", f"folder:{f}") for f in folders]
+def format_breadcrumb(path: str) -> str:
+    path = normalize_path(path)
+    if path == "Root":
+        return "Root"
+    return path.replace("Root/", "Root › ")
+
+
+def folder_list_keyboard(children: list[str], page: int, mode: str, path: str) -> InlineKeyboardMarkup:
+    items = [(f"📁 {name}", f"folder:{name}") for name in children]
 
     top: list[list[InlineKeyboardButton]] = []
+
+    if normalize_path(path) != "Root":
+        top.append([InlineKeyboardButton("⬆ Up", callback_data="action:up")])
+
     if mode == "store":
         top.append([InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")])
 
@@ -169,16 +219,27 @@ async def delete_file_confirm(query, msg_id: int) -> None:
     await query.edit_message_text("⚠ Delete this file?", reply_markup=kb)
 
 
-def folder_delete_choice_keyboard(folder: str, file_count: int) -> InlineKeyboardMarkup:
+def folder_delete_choice_keyboard(folder_path: str, file_count: int, subfolder_count: int) -> InlineKeyboardMarkup:
     """
-    Second-level menu when user taps a folder in delete mode.
+    folder_path: full normalized path, e.g. 'Root/Videos'
     """
-    text_count = f" ({file_count} files)" if file_count else " (empty)"
+    folder_path = normalize_path(folder_path)
+    total_items_text = f"{file_count} files, {subfolder_count} subfolders"
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"📂 Open folder{text_count}", callback_data=f"action:open_folder_delete:{folder}")],
-        [InlineKeyboardButton("🗑 Delete folder", callback_data=f"action:delete_folder_confirm1:{folder}")],
+        [
+            InlineKeyboardButton(
+                f"📂 Open folder ({total_items_text})",
+                callback_data=f"action:open_folder_delete:{folder_path}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                "🗑 Delete folder (and all inside)",
+                callback_data=f"action:delete_folder_confirm1:{folder_path}",
+            )
+        ],
         [InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
+        [InlineKeyboardButton("🏠 Main Menu",      callback_data="action:menu")],
     ])
     return kb
 
@@ -222,53 +283,53 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ---------------------------------------------------------------------------
-# Helpers to (re-)render views
+# View helpers
 # ---------------------------------------------------------------------------
 
 async def show_folder_list(query, user_id: int) -> None:
-    db      = load_db()
-    folders = get_folders(db)
-    state   = user_state.setdefault(user_id, {"mode": "retrieve", "folder": None, "page": 0})
-    mode    = state["mode"]
-    page    = state.get("page", 0)
+    db    = load_db()
+    state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "page": 0})
+    mode  = state["mode"]
+    page  = state.get("page", 0)
+    path  = normalize_path(state.get("path", "Root"))
 
-    if not folders:
+    children = get_subfolders_for_path(db, path)
+
+    if not children:
+        text = f"📂 *{format_breadcrumb(path)}* — no subfolders."
+        top: list[list[InlineKeyboardButton]] = []
+
+        if path != "Root":
+            top.append([InlineKeyboardButton("⬆ Up", callback_data="action:up")])
+
         if mode == "store":
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")],
-                [InlineKeyboardButton("🏠 Main Menu",  callback_data="action:menu")],
-            ])
-            await query.edit_message_text("No folders yet. Create one first.", reply_markup=kb)
-        else:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-            ])
-            await query.edit_message_text("No folders found.", reply_markup=kb)
+            top.append([InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")])
+
+        top.append([InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")])
+        kb = InlineKeyboardMarkup(top)
+        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
         return
 
-    kb = folder_list_keyboard(folders, page, mode)
+    kb = folder_list_keyboard(children, page, mode, path)
 
     if mode == "store":
-        text = "📁 *Select a folder to store into:*"
+        text = f"📁 *{format_breadcrumb(path)}* — choose a folder or create a new one:"
     elif mode == "delete":
-        text = "🗑 *Select a folder to manage:*"
+        text = f"🗑 *{format_breadcrumb(path)}* — select a folder to manage:"
     else:
-        text = "📁 *Select a folder to browse:*"
+        text = f"📁 *{format_breadcrumb(path)}* — select a folder to browse:"
 
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def show_files_in_folder(query, user_id: int) -> None:
     db    = load_db()
-    state = user_state.setdefault(user_id, {"mode": "retrieve", "folder": None, "page": 0})
-    folder = state.get("folder")
-    page   = state.get("page", 0)
-    mode   = state["mode"]
+    state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "page": 0})
+    path  = normalize_path(state.get("path", "Root"))
+    page  = state.get("page", 0)
+    mode  = state["mode"]
 
-    if not folder:
-        return await show_folder_list(query, user_id)
-
-    files = get_files_in_folder(db, folder)
+    files = get_files_in_folder(db, path)
 
     if not files:
         kb = InlineKeyboardMarkup([
@@ -276,7 +337,7 @@ async def show_files_in_folder(query, user_id: int) -> None:
             [InlineKeyboardButton("🏠 Main Menu",       callback_data="action:menu")],
         ])
         await query.edit_message_text(
-            f"📂 *{folder}* is empty.",
+            f"📂 *{format_breadcrumb(path)}* is empty.",
             parse_mode="Markdown",
             reply_markup=kb,
         )
@@ -285,9 +346,9 @@ async def show_files_in_folder(query, user_id: int) -> None:
     kb = files_in_folder_keyboard(files, page, mode)
 
     if mode == "delete":
-        text = f"🗑 *{folder}* — choose a file to delete:"
+        text = f"🗑 *{format_breadcrumb(path)}* — choose a file to delete:"
     else:
-        text = f"📂 *{folder}* — tap a file to receive it:"
+        text = f"📂 *{format_breadcrumb(path)}* — tap a file to receive it:"
 
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
@@ -307,7 +368,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
 
-    # ── Main menu ──────────────────────────────────────────────────────────
+    # Main menu
     if data == "action:menu":
         user_state.pop(user_id, None)
         await query.edit_message_text(
@@ -317,102 +378,134 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    # ── Mode selection ─────────────────────────────────────────────────────
+    # Mode selection
     if data.startswith("mode:"):
         mode = data.split(":", 1)[1]
-        user_state[user_id] = {"mode": mode, "folder": None, "page": 0}
+        user_state[user_id] = {"mode": mode, "path": "Root", "page": 0}
         await show_folder_list(query, user_id)
-        # Only store mode uses conversation state for file receiving
         return WAIT_STORE_FILE if mode == "store" else ConversationHandler.END
 
-    # ── Pagination ─────────────────────────────────────────────────────────
+    # Pagination (for folder lists)
     if data.startswith("page:"):
         page = int(data.split(":", 1)[1])
-        state = user_state.setdefault(user_id, {"mode": "retrieve", "folder": None, "page": 0})
+        state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "page": 0})
         state["page"] = page
-        if state.get("folder"):
-            await show_files_in_folder(query, user_id)
-        else:
-            await show_folder_list(query, user_id)
+        await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # ── Folder selected ────────────────────────────────────────────────────
+    # Up one level
+    if data == "action:up":
+        state = user_state.setdefault(user_id, {"mode": "store", "path": "Root", "page": 0})
+        current = normalize_path(state.get("path", "Root"))
+        if current != "Root":
+            parent = current.rsplit("/", 1)[0]
+            state["path"] = normalize_path(parent)
+        state["page"] = 0
+        await show_folder_list(query, user_id)
+        return ConversationHandler.END
+
+    # Folder selected
     if data.startswith("folder:"):
         folder_name = data.split(":", 1)[1]
-        state = user_state.setdefault(user_id, {"mode": "retrieve", "folder": None, "page": 0})
+        state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "page": 0})
         mode  = state["mode"]
+        current = normalize_path(state.get("path", "Root"))
+
+        # Always build new path = current + one child segment
+        if current == "Root":
+            new_path = f"Root/{folder_name}"
+        else:
+            new_path = f"{current}/{folder_name}"
+        new_path = normalize_path(new_path)
+        state["path"] = new_path
+        state["page"] = 0
 
         if mode == "delete":
-            # In delete mode, show second-level menu (open / delete) for this folder
             db = load_db()
-            count = len(get_files_in_folder(db, folder_name))
-            kb = folder_delete_choice_keyboard(folder_name, count)
+            files_here = len(get_files_in_folder(db, new_path))
+            subfolders_here = len(get_subfolders_for_path(db, new_path))
+            kb = folder_delete_choice_keyboard(new_path, files_here, subfolders_here)
             await query.edit_message_text(
-                f"🗑 Folder *{folder_name}*\nFiles: {count}\n\nWhat do you want to do?",
+                f"🗑 Folder *{format_breadcrumb(new_path)}*"
+                f"\nFiles: {files_here}, Subfolders: {subfolders_here}\n\nWhat do you want to do?",
                 parse_mode="Markdown",
                 reply_markup=kb,
             )
-            # Do not change folder selection yet; only when user chooses open
             return ConversationHandler.END
-
-        # Other modes behave as before
-        state["folder"] = folder_name
-        state["page"]   = 0
 
         if mode == "store":
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-            ])
-            await query.edit_message_text(
-                f"📁 Folder set to *{folder_name}*\n\nNow send me the file you want to store.",
-                parse_mode="Markdown",
-                reply_markup=kb,
-            )
+            await show_folder_list(query, user_id)
             return WAIT_STORE_FILE
-        else:
-            await show_files_in_folder(query, user_id)
-            return ConversationHandler.END
 
-    # ── Open folder from delete choice ─────────────────────────────────────
-    if data.startswith("action:open_folder_delete:"):
-        folder_name = data.split(":", 2)[2]
-        state = user_state.setdefault(user_id, {"mode": "delete", "folder": None, "page": 0})
-        state["folder"] = folder_name
-        state["page"]   = 0
+        # retrieve mode
         await show_files_in_folder(query, user_id)
         return ConversationHandler.END
 
-    # ── First confirmation before delete folder ────────────────────────────
-    if data.startswith("action:delete_folder_confirm1:"):
-        folder = data.split(":", 2)[2]
-        db = load_db()
-        count = len(get_files_in_folder(db, folder))
-        # Extra warning if too many files
-        extra = "\n\n⚠ This folder has a lot of files!" if count >= 20 else ""
+    # New folder: ask for name
+    if data == "action:new_folder":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚠ Yes, delete this folder", callback_data=f"confirm_delete_folder:{folder}")],
             [InlineKeyboardButton("❌ Cancel", callback_data="action:back_folders")],
         ])
         await query.edit_message_text(
-            f"⚠ WARNING\n\nFolder: {folder}\nFiles: {count}{extra}\n\nThis cannot be undone.",
+            "📁 Type the name of the new folder:",
+            reply_markup=kb,
+        )
+        return WAIT_NEW_FOLDER
+
+    # Open folder from delete choice
+    if data.startswith("action:open_folder_delete:"):
+        # "action:open_folder_delete:<folder_path>"
+        folder_path = normalize_path(data.split(":", 2)[2])
+        state = user_state.setdefault(user_id, {"mode": "delete", "path": "Root", "page": 0})
+        state["path"] = folder_path
+        state["page"] = 0
+        await show_files_in_folder(query, user_id)
+        return ConversationHandler.END
+
+    # First confirmation before delete folder tree
+    if data.startswith("action:delete_folder_confirm1:"):
+        # "action:delete_folder_confirm1:<folder_path>"
+        folder_path = normalize_path(data.split(":", 2)[2])
+
+        db = load_db()
+        prefix = folder_path.rstrip("/") + "/"
+        total_files = 0
+        for item in db.values():
+            fp = normalize_path(item.get("folder", "Root"))
+            if fp == folder_path or fp.startswith(prefix):
+                total_files += 1
+
+        extra = "\n\n⚠ This folder has a lot of files!" if total_files >= 20 else ""
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⚠ Yes, delete this folder tree",
+                    callback_data=f"confirm_delete_folder:{folder_path}",
+                )
+            ],
+            [InlineKeyboardButton("❌ Cancel", callback_data="action:back_folders")],
+        ])
+        await query.edit_message_text(
+            f"⚠ WARNING\n\nFolder: {format_breadcrumb(folder_path)}\n"
+            f"Total files: {total_files}{extra}\n\nThis cannot be undone.",
+            parse_mode="Markdown",
             reply_markup=kb,
         )
         return ConversationHandler.END
 
-    # ── Back to folder list ────────────────────────────────────────────────
+    # Back to folder list
     if data == "action:back_folders":
-        state = user_state.setdefault(user_id, {"mode": "retrieve", "folder": None, "page": 0})
-        state["folder"] = None
-        state["page"]   = 0
+        state = user_state.setdefault(user_id, {"mode": "store", "path": "Root", "page": 0})
+        state["page"] = 0
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # ── Back to files after cancel delete file ─────────────────────────────
+    # Back to files after cancel delete file
     if data == "action:back_files":
         await show_files_in_folder(query, user_id)
         return ConversationHandler.END
 
-    # ── Delete single file ────────────────────────────────────────────────
+    # Delete single file
     if data.startswith("delete_file:"):
         msg_id = int(data.split(":", 1)[1])
         await delete_file_confirm(query, msg_id)
@@ -430,28 +523,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✅ File deleted.")
         return ConversationHandler.END
 
-    # ── Final folder delete (after double confirmation) ────────────────────
+    # Final folder tree delete
     if data.startswith("confirm_delete_folder:"):
-        folder = data.split(":", 1)[1]
+        # "confirm_delete_folder:<folder_path>"
+        folder_path = normalize_path(data.split(":", 1)[1])
         db = load_db()
-        keys_to_delete: list[str] = []
-
-        for k, item in db.items():
-            if item.get("folder", "Root") == folder:
-                try:
-                    await context.bot.delete_message(ARCHIVE_CHAT_ID, item["message_id"])
-                except Exception:
-                    pass
-                keys_to_delete.append(k)
+        keys_to_delete = delete_folder_tree(db, folder_path)
 
         for k in keys_to_delete:
-            del db[k]
+            try:
+                msg_id = int(k)
+                await context.bot.delete_message(ARCHIVE_CHAT_ID, msg_id)
+            except Exception:
+                pass
 
         save_db(db)
-        await query.edit_message_text(f"✅ Folder '{folder}' deleted.")
+        await query.edit_message_text(f"✅ Folder tree '{format_breadcrumb(folder_path)}' deleted.")
         return ConversationHandler.END
 
-    # ── File selected (retrieve mode) ──────────────────────────────────────
+    # File selected (retrieve mode)
     if data.startswith("file:"):
         message_id = int(data.split(":", 1)[1])
         try:
@@ -463,6 +553,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await query.message.reply_text(f"⚠️ Could not retrieve file: {e}")
         return ConversationHandler.END
+
+    return ConversationHandler.END
 
 
 # ---------------------------------------------------------------------------
@@ -482,15 +574,21 @@ async def receive_new_folder_name(
         await update.message.reply_text("Folder name cannot be empty. Try again:")
         return WAIT_NEW_FOLDER
 
-    state = user_state.setdefault(user_id, {"mode": "store", "folder": None, "page": 0})
-    state["folder"] = folder_name
-    state["page"]   = 0
+    state = user_state.setdefault(user_id, {"mode": "store", "path": "Root", "page": 0})
+    current = normalize_path(state.get("path", "Root"))
+
+    new_path = f"{current}/{folder_name}" if current != "Root" else f"Root/{folder_name}"
+    new_path = normalize_path(new_path)
+    state["path"] = new_path
+    state["page"] = 0
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
+        [InlineKeyboardButton("➕ New subfolder",   callback_data="action:new_folder")],
+        [InlineKeyboardButton("⬆ Up",              callback_data="action:up")],
+        [InlineKeyboardButton("🏠 Main Menu",      callback_data="action:menu")],
     ])
     await update.message.reply_text(
-        f"✅ Folder *{folder_name}* created and selected.\n\nNow send me the file to store.",
+        f"✅ Folder *{format_breadcrumb(new_path)}* created.\n\nYou can create more subfolders or store files inside it.",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -506,7 +604,7 @@ async def receive_store_file(
     user_id = update.effective_user.id
     message = update.message
     state   = user_state.get(user_id, {})
-    folder_name = state.get("folder", "Root")
+    folder_path = normalize_path(state.get("path", "Root"))
 
     if not (message.document or message.photo or message.video or message.audio):
         await message.reply_text("Please send a file (document, photo, video, or audio).")
@@ -537,18 +635,19 @@ async def receive_store_file(
     db = load_db()
     db[str(copied.message_id)] = {
         "filename":   filename,
-        "folder":     folder_name,
+        "folder":     folder_path,
         "message_id": copied.message_id,
         "type":       file_type,
     }
     save_db(db)
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store another", callback_data=f"folder:{folder_name}")],
-        [InlineKeyboardButton("🏠 Main Menu",     callback_data="action:menu")],
+        [InlineKeyboardButton("📥 Store another", callback_data=f"folder:{folder_path.rsplit('/', 1)[-1]}")],
+        [InlineKeyboardButton("⬆ Up",            callback_data="action:up")],
+        [InlineKeyboardButton("🏠 Main Menu",    callback_data="action:menu")],
     ])
     await message.reply_text(
-        f"✅ *{filename}* stored in *{folder_name}*.",
+        f"✅ *{filename}* stored in *{format_breadcrumb(folder_path)}*.",
         parse_mode="Markdown",
         reply_markup=kb,
     )
