@@ -33,8 +33,17 @@ BOT_TOKEN = os.environ["BOT_TOKEN"]
 ARCHIVE_CHAT_ID = int(os.environ["ARCHIVE_CHAT_ID"])
 OWNER_ID = int(os.environ["OWNER_ID"])
 
-DB_FILE = Path("metadata.json")
-PAGE_SIZE = 10
+# DB_PATH env var lets you point the database at a persistent Volume on Railway.
+# Default falls back to the current directory so local dev works without changes.
+_DB_PATH     = Path(os.environ.get("DB_PATH", "metadata.json"))
+_DB_DIR      = _DB_PATH.parent
+DB_FILE      = _DB_PATH
+DB_TMP_FILE  = _DB_DIR / "metadata.tmp.json"   # atomic-write staging file
+BACKUP_COUNT = 5                                # rolling backups kept on disk
+PAGE_SIZE    = 10
+
+# Ensure the directory exists (important on first deploy when Volume is empty)
+_DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # ConversationHandler states
 WAIT_NEW_FOLDER      = 1
@@ -61,22 +70,90 @@ WAIT_RENAME_FOLDER   = 5   # NEW: renaming a folder
 user_state: dict[int, dict] = {}
 
 # ---------------------------------------------------------------------------
-# DB helpers
+# DB persistence layer  (atomic writes + rolling backups + startup check)
 # ---------------------------------------------------------------------------
 
-if not DB_FILE.exists():
-    DB_FILE.write_text("{}")
+def _backup_path(n: int) -> Path:
+    """Place backups beside the live DB: /data/metadata.backup.1.json … .5.json"""
+    return _DB_DIR / f"metadata.backup.{n}.json"
+
+
+def _rotate_backups() -> None:
+    """Shift backups down: .4→.5, .3→.4, …, live→.1"""
+    for i in range(BACKUP_COUNT - 1, 0, -1):
+        src = _backup_path(i)
+        dst = _backup_path(i + 1)
+        if src.exists():
+            src.replace(dst)
+    if DB_FILE.exists():
+        import shutil
+        shutil.copy2(DB_FILE, _backup_path(1))
+
+
+def _try_parse(path: Path) -> dict | None:
+    """Return parsed dict if file exists and is valid JSON, else None."""
+    try:
+        text = path.read_text(encoding="utf-8")
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _startup_check() -> None:
+    """
+    Called once at import time.
+    • If DB_FILE is missing or corrupt, try backups 1→5 in order.
+    • Logs a warning to stdout; never raises.
+    """
+    if _try_parse(DB_FILE) is not None:
+        return  # all good
+
+    print(f"⚠️  {DB_FILE} is missing or corrupt — attempting recovery…")
+    for i in range(1, BACKUP_COUNT + 1):
+        bp = _backup_path(i)
+        data = _try_parse(bp)
+        if data is not None:
+            print(f"✅  Recovered from {bp}  ({len(data)} records)")
+            DB_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return
+        if bp.exists():
+            print(f"   {bp} — also corrupt, skipping")
+
+    print("⚠️  No valid backup found — starting with an empty database.")
+    DB_FILE.write_text("{}", encoding="utf-8")
+
+
+# Run the startup check immediately (before the bot starts taking updates)
+_startup_check()
 
 
 def load_db() -> dict:
-    try:
-        return json.loads(DB_FILE.read_text())
-    except Exception:
+    """Load DB from disk; fall back to empty dict on any error."""
+    data = _try_parse(DB_FILE)
+    if data is None:
+        # Live file just went bad mid-run — try backups
+        for i in range(1, BACKUP_COUNT + 1):
+            data = _try_parse(_backup_path(i))
+            if data is not None:
+                return data
         return {}
+    return data
 
 
 def save_db(data: dict) -> None:
-    DB_FILE.write_text(json.dumps(data, indent=2))
+    """
+    Atomically write *data* to DB_FILE.
+    1. Serialise to a temp file in the same directory.
+    2. Rotate backups.
+    3. Replace the live file with the temp file (atomic on POSIX; best-effort on Windows).
+    """
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+    DB_TMP_FILE.write_text(text, encoding="utf-8")
+    _rotate_backups()
+    DB_TMP_FILE.replace(DB_FILE)   # atomic rename on Linux/macOS
 
 
 def _now_iso() -> str:
@@ -336,13 +413,15 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 async def set_commands(app: Application) -> None:
     await app.bot.set_my_commands(
         [
-            BotCommand("start",  "Open archive menu"),
-            BotCommand("menu",   "Return to main menu"),
-            BotCommand("cancel", "Cancel current action"),
-            BotCommand("stats",  "Show archive statistics"),
-            BotCommand("search", "Search files by name"),
-            BotCommand("help",   "Show help & command list"),
-            BotCommand("joinme", "Get invite link & become admin in archive group"),
+            BotCommand("start",   "Open archive menu"),
+            BotCommand("menu",    "Return to main menu"),
+            BotCommand("cancel",  "Cancel current action"),
+            BotCommand("stats",   "Show archive statistics"),
+            BotCommand("search",  "Search files by name"),
+            BotCommand("help",    "Show help & command list"),
+            BotCommand("joinme",  "Get invite link & become admin in archive group"),
+            BotCommand("backup",  "Download metadata.json as a file"),
+            BotCommand("restore", "Reply to a .json file to restore the database"),
         ]
     )
 
@@ -402,6 +481,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/stats — show total files & folder count\n"
         "/search — search files by name\n"
         "/joinme — get archive group invite & become admin\n"
+        "/backup — download metadata.json (your archive index)\n"
+        "/restore — reply to a .json file to restore the database\n"
         "/help — this message\n\n"
         "*Modes:*\n"
         "📥 *Store* — navigate/create folders, then send files.\n"
@@ -411,10 +492,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "✏️ *Rename* — rename any file or folder.\n"
         "🔀 *Move* — move a file to any other folder.\n"
         "🔍 *Search* — find files by name across all folders.\n\n"
-        "*Tips:*\n"
-        "• File type emoji shows in retrieve/search (🖼 📄 🎬 🎵 …)\n"
-        "• Folder buttons show item counts.\n"
-        "• Rename works from search results too.\n\n"
+        "*Data safety:*\n"
+        "• Saves are atomic — a crash mid-write won't corrupt the DB.\n"
+        "• Last 5 saves are kept as rolling backups automatically.\n"
+        "• Use /backup regularly to keep an off-device copy.\n"
+        "• Use /restore to reload from any backup file.\n\n"
         "*Archive group security:*\n"
         "The archive group auto-kicks any intruder.\n"
         "Use /joinme for a fresh single-use invite link.",
@@ -1500,8 +1582,96 @@ async def receive_store_file(
 
 
 # ---------------------------------------------------------------------------
-# Security: /joinme and archive group protection
+# /backup  /restore
 # ---------------------------------------------------------------------------
+
+async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the live metadata.json to the owner as a downloadable file."""
+    if not authorized(update):
+        return await deny(update)
+
+    if not DB_FILE.exists():
+        await update.message.reply_text("⚠️ No database file found.")
+        return
+
+    db = load_db()
+    total_files, total_folders = db_stats(db)
+    caption = (
+        f"🗄 *Archive backup*\n"
+        f"`{DB_FILE.name}` — {total_files} files, {total_folders} folders\n"
+        f"_{_now_iso()}_"
+    )
+    with open(DB_FILE, "rb") as f:
+        await update.message.reply_document(
+            document=f,
+            filename=DB_FILE.name,
+            caption=caption,
+            parse_mode="Markdown",
+        )
+
+
+async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Reply to a .json document with /restore to hot-reload the database.
+    The current DB is backed up first so the restore is always reversible.
+    """
+    if not authorized(update):
+        return await deny(update)
+
+    # Must be a reply to a document message
+    replied = update.message.reply_to_message
+    if not replied or not replied.document:
+        await update.message.reply_text(
+            "ℹ️ *How to restore:*\n\n"
+            "1. Use /backup to download your current database.\n"
+            "2. Edit the file if needed.\n"
+            "3. Send the `.json` file back to this chat.\n"
+            "4. *Reply* to that file message with `/restore`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    doc = replied.document
+    if not doc.file_name or not doc.file_name.endswith(".json"):
+        await update.message.reply_text("⚠️ The replied-to file must be a `.json` file.")
+        return
+
+    if doc.file_size and doc.file_size > 5 * 1024 * 1024:  # 5 MB sanity guard
+        await update.message.reply_text("⚠️ File too large (max 5 MB).")
+        return
+
+    status_msg = await update.message.reply_text("⏳ Downloading and validating…")
+
+    try:
+        tg_file = await context.bot.get_file(doc.file_id)
+        raw_bytes = await tg_file.download_as_bytearray()
+        raw_text = raw_bytes.decode("utf-8")
+        new_data = json.loads(raw_text)
+    except Exception as e:
+        await status_msg.edit_text(f"⚠️ Could not parse the file: {e}")
+        return
+
+    if not isinstance(new_data, dict):
+        await status_msg.edit_text("⚠️ Invalid format — expected a JSON object at the top level.")
+        return
+
+    # Back up current DB before overwriting
+    _rotate_backups()
+
+    # Write new data atomically
+    DB_TMP_FILE.write_text(json.dumps(new_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    DB_TMP_FILE.replace(DB_FILE)
+
+    total_files, total_folders = db_stats(new_data)
+    await status_msg.edit_text(
+        f"✅ *Database restored successfully*\n\n"
+        f"Records loaded: *{total_files}* files across *{total_folders}* folders.\n"
+        f"Previous database saved as `{_backup_path(1).name}`.",
+        parse_mode="Markdown",
+    )
+
+
+
 
 async def joinme_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
@@ -1664,9 +1834,11 @@ conv = ConversationHandler(
 )
 
 app.add_handler(conv)
-app.add_handler(CommandHandler("help",   help_command))
-app.add_handler(CommandHandler("stats",  stats_command))
-app.add_handler(CommandHandler("joinme", joinme_command))
+app.add_handler(CommandHandler("help",    help_command))
+app.add_handler(CommandHandler("stats",   stats_command))
+app.add_handler(CommandHandler("joinme",  joinme_command))
+app.add_handler(CommandHandler("backup",  backup_command))
+app.add_handler(CommandHandler("restore", restore_command))
 app.add_handler(
     ChatMemberHandler(
         protect_archive_group,
