@@ -9,9 +9,8 @@ from telegram import (
     InlineKeyboardMarkup,
     Message,
     ChatMemberUpdated,
-    ChatPermissions,
 )
-from telegram.constants import ChatMemberStatus, ChatType
+from telegram.constants import ChatMemberStatus
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -46,13 +45,12 @@ WAIT_STORE_FILE = 2
 #   "path": str, e.g. "Root" or "Root/Videos/Edits"
 #   "view": "folders" | "files",
 #   "page": int,
-#   "last_btn_msg": int | None, message_id of the last summary-with-buttons
+#   "last_btn_msg": int | None, message_id of last summary-with-buttons
 #   "store_count": int, files stored in this session
 # }
 user_state: dict[int, dict] = {}
 
-# Also track last summary message in DM per user, so clear_last_btn_msg
-# edits the correct message even when called from another update.
+# Track last summary message per user so we can remove old keyboards
 last_summary_msg_id: dict[int, int] = {}
 
 # ---------------------------------------------------------------------------
@@ -128,7 +126,7 @@ def delete_folder_tree(db: dict, folder_path: str) -> list[str]:
         k
         for k, item in db.items()
         if normalize_path(item.get("folder", "Root")) == folder_path
-        or normalize_path(item.get("folder", "Root")).startswith(prefix)
+           or normalize_path(item.get("folder", "Root")).startswith(prefix)
     ]
     for k in keys:
         del db[k]
@@ -149,7 +147,7 @@ def parent_path(path: str) -> str:
 def resolve_filename(message: Message, fallback: str) -> str:
     """
     Best-effort filename from a Telegram message.
-    Priority: caption (user name) → file_name attr → fallback.
+    Priority: caption → file_name attr → fallback.
     """
     caption = (message.caption or "").strip()
     if caption:
@@ -187,7 +185,7 @@ async def deny(update: Update) -> None:
 
 
 async def clear_last_btn_msg(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: dict, user_id: int
+        context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: dict, user_id: int
 ) -> None:
     """
     Strip the inline keyboard from the previous store-summary message
@@ -203,7 +201,7 @@ async def clear_last_btn_msg(
             reply_markup=None,
         )
     except Exception:
-        pass  # already edited / deleted / too old
+        pass
     state["last_btn_msg"] = None
     last_summary_msg_id[user_id] = 0
 
@@ -214,16 +212,16 @@ async def clear_last_btn_msg(
 
 
 def build_paginated_keyboard(
-    items: list[tuple[str, str]],
-    page: int,
-    extra_top_rows: list | None = None,
-    extra_bottom_rows: list | None = None,
+        items: list[tuple[str, str]],
+        page: int,
+        extra_top_rows: list | None = None,
+        extra_bottom_rows: list | None = None,
 ) -> InlineKeyboardMarkup:
     total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
 
     keyboard = list(extra_top_rows or [])
-    chunk = items[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE]
+    chunk = items[page * PAGE_SIZE: page * PAGE_SIZE + PAGE_SIZE]
     for label, cb in chunk:
         keyboard.append([InlineKeyboardButton(label, callback_data=cb)])
 
@@ -262,7 +260,7 @@ async def set_commands(app: Application) -> None:
             BotCommand("start", "Open archive menu"),
             BotCommand("menu", "Return to main menu"),
             BotCommand("cancel", "Cancel current action"),
-            BotCommand("joinme", "Send invite link & make me admin in archive group"),  # NEW
+            BotCommand("joinme", "Invite me & make me admin in archive group"),
         ]
     )
 
@@ -295,7 +293,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ---------------------------------------------------------------------------
-# View helpers (edit inline messages in place)
+# View helpers
 # ---------------------------------------------------------------------------
 
 
@@ -319,12 +317,12 @@ async def show_folder_list(query, user_id: int) -> None:
     path = normalize_path(state.get("path", "Root"))
     children = get_subfolders_for_path(db, path)
 
-    # annotate subfolders with file counts in retrieve/delete
     if mode in ("retrieve", "delete") and children:
         def folder_label(name: str) -> str:
             full = normalize_path(f"{path}/{name}")
             n = count_all_in_tree(db, full)
             return f"📁 {name} ({n})" if n else f"📁 {name}"
+
         items = [(folder_label(name), f"cd:{name}") for name in children]
     else:
         items = [(f"📁 {name}", f"cd:{name}") for name in children]
@@ -509,7 +507,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         },
     )
 
-    # Main menu
     if data == "action:menu":
         user_state.pop(user_id, None)
         await query.edit_message_text(
@@ -519,7 +516,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    # Mode selection
     if data.startswith("mode:"):
         mode = data.split(":", 1)[1]
         user_state[user_id] = {
@@ -533,7 +529,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # Pagination
     if data.startswith("page:"):
         state["page"] = int(data.split(":", 1)[1])
         if state.get("view") == "files":
@@ -542,7 +537,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # Up one level
     if data == "action:up":
         state["path"] = parent_path(normalize_path(state.get("path", "Root")))
         state["page"] = 0
@@ -550,7 +544,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # Enter subfolder
     if data.startswith("cd:"):
         folder_name = data[3:]
         current = normalize_path(state.get("path", "Root"))
@@ -596,7 +589,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_folder_list(query, user_id)
             return ConversationHandler.END
 
-        # retrieve
+            # retrieve mode
         state["view"] = "files"
         await show_files_in_folder(query, user_id)
         return ConversationHandler.END
@@ -746,9 +739,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ConversationHandler steps
 # ---------------------------------------------------------------------------
 
-
 async def receive_new_folder_name(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+        update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     if not authorized(update):
         return await deny(update)
@@ -801,7 +793,7 @@ async def receive_new_folder_name(
 
 
 async def receive_store_file(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
+        update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int:
     if not authorized(update):
         return await deny(update)
@@ -821,7 +813,6 @@ async def receive_store_file(
         message_id=message.message_id,
     )
 
-    # Filename resolution
     if message.document:
         file_type = "document"
         filename = resolve_filename(message, f"file_{copied.message_id}")
@@ -846,20 +837,16 @@ async def receive_store_file(
     }
     save_db(db)
 
-    # Update session counter
     state["store_count"] = state.get("store_count", 0) + 1
     count = state["store_count"]
 
-    # Clear previous summary buttons
     await clear_last_btn_msg(context, message.chat.id, state, user_id)
 
-    # Plain-text ack
     await message.reply_text(
         f"✅ `{filename}` → *{format_breadcrumb(folder_path)}*",
         parse_mode="Markdown",
     )
 
-    # Summary message with buttons
     kb = InlineKeyboardMarkup(
         [
             [
@@ -890,27 +877,25 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Security / group-management features
+# Security: /joinme and group protection
 # ---------------------------------------------------------------------------
 
 async def joinme_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send an invite link to the archive group and try to ensure OWNER_ID is/will be admin."""
+    """Send invite link to archive group and try to ensure OWNER_ID is admin."""
     if not authorized(update):
         return await deny(update)
 
     bot = context.bot
 
-    # Create/GGet invite link
     try:
-        # get_chat will fail if bot not in group
         chat = await bot.get_chat(ARCHIVE_CHAT_ID)
-        # For private groups, we can create an invite link
         invite_link = None
         try:
-            invite = await bot.create_chat_invite_link(ARCHIVE_CHAT_ID, creates_join_request=False)
+            invite = await bot.create_chat_invite_link(
+                ARCHIVE_CHAT_ID, creates_join_request=False
+            )
             invite_link = invite.invite_link
         except Exception:
-            # Fall back: maybe there is already an existing link
             invite_link = chat.invite_link
     except Exception as e:
         await update.message.reply_text(f"Cannot access archive group: {e}")
@@ -920,16 +905,19 @@ async def joinme_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Could not obtain an invite link for the archive group.")
         return
 
-    # Send the link
     await update.message.reply_text(
         f"🔐 Archive group invite link:\n{invite_link}\n\n"
-        "Join this group; the bot will automatically ensure you are an admin and kick anyone else."
+        "Join this group; the bot will automatically keep only your account (OWNER_ID) and itself.",
     )
 
-    # Try to promote you immediately if you're already a member
+    # Try to promote OWNER_ID if already a member
     try:
         member = await bot.get_chat_member(ARCHIVE_CHAT_ID, OWNER_ID)
-        if member.status in (ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+        if member.status in (
+                ChatMemberStatus.MEMBER,
+                ChatMemberStatus.ADMINISTRATOR,
+                ChatMemberStatus.OWNER,
+        ):
             try:
                 await bot.promote_chat_member(
                     chat_id=ARCHIVE_CHAT_ID,
@@ -953,8 +941,9 @@ async def joinme_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def protect_archive_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    ChatMemberHandler: whenever anyone joins/leaves the archive group,
-    keep only OWNER_ID (and the bot) and ensure OWNER_ID is admin.
+    When membership changes in ARCHIVE_CHAT_ID:
+    - Kick every human whose ID != OWNER_ID.
+    - Ensure OWNER_ID is admin with full permissions.
     """
     chat_member_update: ChatMemberUpdated = update.chat_member
     chat = chat_member_update.chat
@@ -966,7 +955,6 @@ async def protect_archive_group(update: Update, context: ContextTypes.DEFAULT_TY
     new_member = chat_member_update.new_chat_member
     user = new_member.user
 
-    # Kick any human that is not OWNER_ID
     if user.id != OWNER_ID and not user.is_bot:
         try:
             await bot.ban_chat_member(chat.id, user.id)
@@ -974,7 +962,6 @@ async def protect_archive_group(update: Update, context: ContextTypes.DEFAULT_TY
             pass
         return
 
-    # Ensure OWNER_ID is admin with full perms when he appears/reappears
     if user.id == OWNER_ID:
         try:
             await bot.promote_chat_member(
@@ -1030,16 +1017,13 @@ conv = ConversationHandler(
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("menu", menu_command))
 app.add_handler(CommandHandler("cancel", cancel))
-app.add_handler(CommandHandler("joinme", joinme_command))  # NEW
-
-# Security: watch member changes in the archive group
+app.add_handler(CommandHandler("joinme", joinme_command))
 app.add_handler(
     ChatMemberHandler(
         protect_archive_group,
         ChatMemberHandler.CHAT_MEMBER,
     )
 )
-
 app.add_handler(conv)
 
 if __name__ == "__main__":
