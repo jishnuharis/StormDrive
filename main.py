@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from telegram import (
@@ -41,6 +41,7 @@ DB_FILE      = _DB_PATH
 DB_TMP_FILE  = _DB_DIR / "metadata.tmp.json"   # atomic-write staging file
 BACKUP_COUNT = 5                                # rolling backups kept on disk
 PAGE_SIZE    = 10
+IST          = timezone(timedelta(hours=5, minutes=30))   # India Standard Time
 
 # Ensure the directory exists (important on first deploy when Volume is empty)
 _DB_DIR.mkdir(parents=True, exist_ok=True)
@@ -50,14 +51,13 @@ WAIT_NEW_FOLDER      = 1
 WAIT_STORE_FILE      = 2
 WAIT_RENAME_INPUT    = 3
 WAIT_SEARCH_INPUT    = 4
-WAIT_RENAME_FOLDER   = 5
-WAIT_MOVE_FOLDER     = 6   # picking destination for folder move
+WAIT_RENAME_FOLDER   = 5   # NEW: renaming a folder
 
 # ---------------------------------------------------------------------------
 # In-memory user state
 # ---------------------------------------------------------------------------
 # user_state[user_id] = {
-#   "mode":              "store" | "retrieve" | "delete" | "move" | "rename" | "copy"
+#   "mode":              "store" | "retrieve" | "delete" | "move" | "rename"
 #   "path":              str  — current folder path e.g. "Root/Videos/Edits"
 #   "view":              "folders" | "files" | "search"
 #   "page":              int
@@ -66,9 +66,6 @@ WAIT_MOVE_FOLDER     = 6   # picking destination for folder move
 #   "rename_target":     int | None  — message_id of file being renamed
 #   "rename_folder_path":str | None  — full path of folder being renamed
 #   "move_target":       int | None  — message_id of file being moved
-#   "move_folder_path":  str | None  — full path of folder being moved
-#   "copy_target":       int | None  — message_id of file being copied
-#   "sort_key":          "date" | "name" | "type"  — file sort order
 #   "search_items":      list | None — last search results (for back nav)
 # }
 user_state: dict[int, dict] = {}
@@ -113,6 +110,13 @@ def _startup_check() -> None:
     • Logs a warning to stdout; never raises.
     """
     if _try_parse(DB_FILE) is not None:
+        # DB is fine — run timestamp migration (idempotent, safe to run every start)
+        data = _try_parse(DB_FILE)
+        if data:
+            migrated, n = _migrate_timestamps_to_ist(data)
+            if n:
+                print(f"🕐  Migrated {n} timestamp(s) from GMT → IST.")
+                DB_FILE.write_text(json.dumps(migrated, indent=2, ensure_ascii=False), encoding="utf-8")
         return  # all good
 
     print(f"⚠️  {DB_FILE} is missing or corrupt — attempting recovery…")
@@ -161,7 +165,40 @@ def save_db(data: dict) -> None:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    """Return current time in IST (UTC+5:30) as an ISO-8601 string."""
+    return datetime.now(IST).isoformat(timespec="seconds")
+
+
+def _migrate_timestamps_to_ist(data: dict) -> tuple[dict, int]:
+    """
+    One-shot migration: any stored_at that is UTC/GMT (offset +00:00 or ends with Z,
+    or has no tzinfo suffix) gets shifted forward by +5:30 to become IST.
+    Records that already carry +05:30 are left untouched.
+    Returns (updated_data, count_changed).
+    """
+    changed = 0
+    for item in data.values():
+        ts = item.get("stored_at", "")
+        if not ts:
+            continue
+        # Already IST — skip
+        if "+05:30" in ts:
+            continue
+        # Parse common formats: with Z, with +00:00, or naïve (assumed UTC)
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S+00:00",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                dt = datetime.strptime(ts, fmt).replace(tzinfo=timezone.utc)
+                item["stored_at"] = dt.astimezone(IST).isoformat(timespec="seconds")
+                changed += 1
+                break
+            except ValueError:
+                continue
+    return data, changed
+
 
 
 def normalize_path(path: str | None) -> str:
@@ -249,48 +286,6 @@ def move_file_in_db(db: dict, message_id: int, new_folder: str) -> bool:
         return False
     db[key]["folder"] = normalize_path(new_folder)
     return True
-
-
-def move_folder_in_db(db: dict, old_path: str, new_parent: str) -> tuple[int, str]:
-    """Move *old_path* folder (and entire subtree) under *new_parent*.
-    Returns (records_updated, new_full_path)."""
-    old_path   = normalize_path(old_path)
-    new_parent = normalize_path(new_parent)
-    folder_name = old_path.rsplit("/", 1)[-1]
-    new_path    = normalize_path(f"{new_parent}/{folder_name}")
-    updated = rename_folder_in_db(db, old_path, new_path)
-    return updated, new_path
-
-
-def copy_file_in_db(db: dict, message_id: int, new_folder: str) -> dict | None:
-    """Return a shallow copy of the file record pointing to new_folder, or None."""
-    key = str(message_id)
-    item = db.get(key)
-    if not item:
-        return None
-    return {**item, "folder": normalize_path(new_folder)}
-
-
-def toggle_favourite(db: dict, message_id: int) -> bool:
-    """Toggle the 'favourite' flag on a file. Returns new flag state."""
-    key = str(message_id)
-    if key not in db:
-        return False
-    db[key]["favourite"] = not db[key].get("favourite", False)
-    return db[key]["favourite"]
-
-
-def get_favourites(db: dict) -> list[dict]:
-    return [item for item in db.values() if item.get("favourite")]
-
-
-def get_recent_files(db: dict, n: int = 15) -> list[dict]:
-    """Return the *n* most recently stored files."""
-    return sorted(
-        db.values(),
-        key=lambda x: x.get("stored_at", ""),
-        reverse=True,
-    )[:n]
 
 
 def search_files(db: dict, query: str) -> list[dict]:
@@ -436,25 +431,18 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("📥 Store",      callback_data="mode:store"),
-                InlineKeyboardButton("📤 Retrieve",   callback_data="mode:retrieve"),
+                InlineKeyboardButton("📥 Store",    callback_data="mode:store"),
+                InlineKeyboardButton("📤 Retrieve", callback_data="mode:retrieve"),
             ],
             [
-                InlineKeyboardButton("🗑 Delete",     callback_data="mode:delete"),
-                InlineKeyboardButton("✏️ Rename",     callback_data="mode:rename"),
+                InlineKeyboardButton("🗑 Delete",   callback_data="mode:delete"),
+                InlineKeyboardButton("✏️ Rename",   callback_data="mode:rename"),
             ],
             [
-                InlineKeyboardButton("🔀 Move",       callback_data="mode:move"),
-                InlineKeyboardButton("📋 Copy",       callback_data="mode:copy"),
+                InlineKeyboardButton("🔀 Move",     callback_data="mode:move"),
+                InlineKeyboardButton("🔍 Search",   callback_data="action:search"),
             ],
-            [
-                InlineKeyboardButton("🔍 Search",     callback_data="action:search"),
-                InlineKeyboardButton("⭐ Favourites", callback_data="action:favourites"),
-            ],
-            [
-                InlineKeyboardButton("🕓 Recent",     callback_data="action:recent"),
-                InlineKeyboardButton("📊 Stats",      callback_data="action:stats"),
-            ],
+            [InlineKeyboardButton("📊 Stats",       callback_data="action:stats")],
         ]
     )
 
@@ -466,17 +454,16 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 async def set_commands(app: Application) -> None:
     await app.bot.set_my_commands(
         [
-            BotCommand("start",      "Open archive menu"),
-            BotCommand("menu",       "Return to main menu"),
-            BotCommand("cancel",     "Cancel current action"),
-            BotCommand("stats",      "Show archive statistics"),
-            BotCommand("search",     "Search files by name"),
-            BotCommand("recent",     "Show recently stored files"),
-            BotCommand("favourites", "Show starred/favourite files"),
-            BotCommand("help",       "Show help & command list"),
-            BotCommand("joinme",     "Get invite link & become admin in archive group"),
-            BotCommand("backup",     "Download metadata.json as a file"),
-            BotCommand("restore",    "Reply to a .json file to restore the database"),
+            BotCommand("start",   "Open archive menu"),
+            BotCommand("menu",    "Return to main menu"),
+            BotCommand("cancel",  "Cancel current action"),
+            BotCommand("stats",   "Show archive statistics"),
+            BotCommand("search",  "Search files by name"),
+            BotCommand("help",    "Show help & command list"),
+            BotCommand("joinme",  "Get invite link & become admin in archive group"),
+            BotCommand("backup",  "Download metadata.json as a file"),
+            BotCommand("restore",     "Reply to a .json file to restore the database"),
+            BotCommand("migrate_ist", "Migrate all stored timestamps from GMT to IST"),
         ]
     )
 
@@ -487,19 +474,17 @@ async def set_commands(app: Application) -> None:
 
 def _fresh_state(mode: str = "retrieve") -> dict:
     return {
-        "mode":               mode,
-        "path":               "Root",
-        "view":               "folders",
-        "page":               0,
-        "last_btn_msg":       None,
-        "store_count":        0,
-        "rename_target":      None,
-        "rename_folder_path": None,
-        "move_target":        None,
-        "move_folder_path":   None,
-        "copy_target":        None,
-        "sort_key":           "date",
-        "search_items":       None,
+        "mode":              mode,
+        "path":              "Root",
+        "view":              "folders",
+        "page":              0,
+        "last_btn_msg":      None,
+        "store_count":       0,
+        "rename_target":     None,
+        "rename_folder_path":None,
+        "move_target":       None,
+        "search_items":      None,
+        "sort_order":        "newest",   # "newest" | "oldest" | "alpha"
     }
 
 
@@ -538,27 +523,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/cancel — cancel the current action\n"
         "/stats — show total files & folder count\n"
         "/search — search files by name\n"
-        "/recent — show the 15 most recently stored files\n"
-        "/favourites — show all starred files\n"
         "/joinme — get archive group invite & become admin\n"
         "/backup — download metadata.json (your archive index)\n"
         "/restore — reply to a .json file to restore the database\n"
+        "/migrate_ist — convert any old GMT timestamps to IST\n"
         "/help — this message\n\n"
         "*Modes:*\n"
         "📥 *Store* — navigate/create folders, then send files.\n"
         "  Caption becomes the filename. Batch-send supported.\n"
-        "📤 *Retrieve* — browse and tap a file to have it sent.\n"
-        "  Tap any file for a full action panel (retrieve/rename/move/copy/star).\n"
+        "📤 *Retrieve* — browse, sort (newest/oldest/A→Z), and tap a file to receive it.\n"
+        "  Tap a file for actions: retrieve, rename, move, delete, duplicate.\n"
         "🗑 *Delete* — remove individual files or whole folder trees.\n"
-        "✏️ *Rename* — rename any file or subfolder.\n"
-        "🔀 *Move* — move a file or an entire folder to a new location.\n"
-        "📋 *Copy* — duplicate a file into another folder.\n"
-        "🔍 *Search* — find files by name across all folders.\n"
-        "⭐ *Favourites* — star files for quick access; tap ⭐ on any file.\n"
-        "🕓 *Recent* — view the 15 most recently stored files.\n"
-        "📊 *Stats* — per-folder file counts.\n\n"
-        "*Sorting (in any file list):*\n"
-        "Tap 🔃 to cycle sort order: Date ↓ → Name A-Z → Type.\n\n"
+        "✏️ *Rename* — rename any file or folder.\n"
+        "🔀 *Move* — move a file to any other folder.\n"
+        "🔍 *Search* — find files by name across all folders.\n\n"
         "*Data safety:*\n"
         "• Saves are atomic — a crash mid-write won't corrupt the DB.\n"
         "• Last 5 saves are kept as rolling backups automatically.\n"
@@ -704,25 +682,24 @@ async def show_folder_list(query, user_id: int) -> None:
         n = count_all_in_tree(db, full)
         return f"📁 {name}  ({n})" if n else f"📁 {name}"
 
-    # In rename mode, subfolder buttons trigger rename; in move-folder mode,
-    # they navigate (destination picking); everything else navigates.
+    # In rename mode, folders are targets for folder-rename
     if mode == "rename":
         items = [(folder_label(name), f"rename_folder:{name}") for name in children]
+    elif mode == "move":
+        items = [(folder_label(name), f"cd:{name}") for name in children]
     else:
         items = [(folder_label(name), f"cd:{name}") for name in children]
 
     top: list[list[InlineKeyboardButton]] = []
 
     if mode == "store":
-        top.append([InlineKeyboardButton("📥 Store here",     callback_data="action:store_here")])
-        top.append([InlineKeyboardButton("➕ New Folder",     callback_data="action:new_folder")])
+        top.append([InlineKeyboardButton("📥 Store here",   callback_data="action:store_here")])
+        top.append([InlineKeyboardButton("➕ New Folder",   callback_data="action:new_folder")])
     elif mode == "rename":
         top.append([InlineKeyboardButton("✏️ Rename this folder", callback_data="action:rename_this_folder")])
-        top.append([InlineKeyboardButton("🔀 Move this folder",   callback_data="action:move_this_folder")])
     elif mode == "move":
         move_target = state.get("move_target")
-        move_folder = state.get("move_folder_path")
-        if move_target or move_folder:
+        if move_target:
             top.append([InlineKeyboardButton("📂 Move here", callback_data="action:move_here")])
 
     if path != "Root":
@@ -742,7 +719,8 @@ async def show_folder_list(query, user_id: int) -> None:
             f"📂 View {total_files} file{'s' if total_files != 1 else ''} here",
             callback_data="action:view_files",
         )])
-    elif mode in ("move", "copy") and total_files and state.get("move_target") is None and state.get("copy_target") is None:
+    elif mode == "move" and total_files and state.get("move_target") is None:
+        # browsing to pick file to move
         top.insert(0, [InlineKeyboardButton(
             f"📂 View {total_files} file{'s' if total_files != 1 else ''} here",
             callback_data="action:view_files",
@@ -754,7 +732,6 @@ async def show_folder_list(query, user_id: int) -> None:
         "delete":   f"🗑 *{format_breadcrumb(path)}*{file_info}",
         "rename":   f"✏️ *{format_breadcrumb(path)}*{file_info}",
         "move":     f"🔀 *{format_breadcrumb(path)}*{file_info}",
-        "copy":     f"📋 *{format_breadcrumb(path)}*{file_info}",
     }
     header = mode_labels.get(mode, f"📁 *{format_breadcrumb(path)}*{file_info}")
 
@@ -765,7 +742,6 @@ async def show_folder_list(query, user_id: int) -> None:
             "delete":   "\n\nNo subfolders.",
             "rename":   "\n\nNo subfolders to rename.",
             "move":     "\n\nNo subfolders — move here or go up.",
-            "copy":     "\n\nNo subfolders — copy here or go up.",
         }.get(mode, "")
         await query.edit_message_text(
             header + suffix, parse_mode="Markdown",
@@ -777,9 +753,8 @@ async def show_folder_list(query, user_id: int) -> None:
         "store":    "\n\nChoose a subfolder or store here:",
         "retrieve": "\n\nSelect a folder to browse:",
         "delete":   "\n\nSelect a folder to manage:",
-        "rename":   "\n\nTap a folder to rename it, or use the buttons above:",
+        "rename":   "\n\nTap a folder to rename it, or select ✏️ to rename this one:",
         "move":     "\n\nNavigate to destination folder:",
-        "copy":     "\n\nNavigate to destination folder:",
     }.get(mode, "\n\nSelect a folder:")
 
     kb = build_paginated_keyboard(items, page, extra_top_rows=top)
@@ -796,9 +771,18 @@ async def show_files_in_folder(query, user_id: int) -> None:
     mode = state["mode"]
     files = get_files_in_folder(db, path)
 
-    files.sort(key=lambda f: f.get("stored_at", ""), reverse=True)
+    sort_order = state.get("sort_order", "newest")
+    if sort_order == "oldest":
+        files.sort(key=lambda f: f.get("stored_at", ""))
+    elif sort_order == "alpha":
+        files.sort(key=lambda f: f.get("filename", "").lower())
+    else:  # newest (default)
+        files.sort(key=lambda f: f.get("stored_at", ""), reverse=True)
 
-    back_row = [InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")]
+    _next_sort = {"newest": "oldest", "oldest": "alpha", "alpha": "newest"}
+    _sort_label = {"newest": "🕐 Newest", "oldest": "🕑 Oldest", "alpha": "🔤 A→Z"}
+
+    back_row = [InlineKeyboardButton("◄ Back to Folders", callback_data="action:back_folders")]
     menu_row = [InlineKeyboardButton("🏠 Main Menu",       callback_data="action:menu")]
 
     if not files:
@@ -873,13 +857,21 @@ async def show_files_in_folder(query, user_id: int) -> None:
                     "Tap 'Move here' to confirm, or navigate to a different folder:")
 
     else:
-        # retrieve
+        # retrieve — with sort toggle
+        sort_row = [InlineKeyboardButton(
+            f"Sort: {_sort_label[sort_order]}",
+            callback_data=f"sort:{_next_sort[sort_order]}"
+        )]
         items = [
             (f"{file_type_emoji(f.get('type','document'))} {f['filename']}",
              f"get_file:{f['message_id']}")
             for f in files
         ]
-        kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
+        kb = build_paginated_keyboard(
+            items, page,
+            extra_top_rows=[sort_row, back_row],
+            extra_bottom_rows=[menu_row]
+        )
         text = f"📂 *{format_breadcrumb(path)}* — {count_label}\n\nTap a file to receive it:"
 
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -935,7 +927,8 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
                 InlineKeyboardButton("🔀 Move",   callback_data=f"pick_move:{message_id}"),
             ],
             [InlineKeyboardButton("🗑 Delete",    callback_data=f"del_file:{message_id}")],
-            [InlineKeyboardButton("◀ Back",       callback_data="action:back_files")],
+            [InlineKeyboardButton("📋 Duplicate", callback_data=f"do_duplicate:{message_id}")],
+            [InlineKeyboardButton("◀ Back",          callback_data="action:back_files")],
             [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
         ]
     )
@@ -968,6 +961,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── no-op ────────────────────────────────────────────────────────────────
     if data == "noop":
+        return ConversationHandler.END
+
+    # ── sort toggle ────────────────────────────────────────────────────────────────
+    if data.startswith("sort:"):
+        state["sort_order"] = data.split(":", 1)[1]
+        state["page"] = 0
+        await show_files_in_folder(query, user_id)
         return ConversationHandler.END
 
     # ── main menu ────────────────────────────────────────────────────────────
@@ -1086,7 +1086,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             return ConversationHandler.END
 
-        # rename, move, retrieve — show file list directly
+        if mode == "rename":
+            state["view"] = "folders"
+            await show_folder_list(query, user_id)
+            return ConversationHandler.END
+
+        # retrieve, move — show file list directly
         state["view"] = "files"
         await show_files_in_folder(query, user_id)
         return ConversationHandler.END
@@ -1352,6 +1357,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]]
+            ),
+        )
+        return ConversationHandler.END
+
+    # ── duplicate file ─────────────────────────────────────────────────────────────
+    if data.startswith("do_duplicate:"):
+        src_msg_id = int(data.split(":", 1)[1])
+        db = load_db()
+        src_item = db.get(str(src_msg_id))
+        if not src_item:
+            await query.answer("⚠️ File not found.", show_alert=True)
+            return ConversationHandler.END
+        try:
+            copied = await context.bot.copy_message(
+                chat_id=ARCHIVE_CHAT_ID,
+                from_chat_id=ARCHIVE_CHAT_ID,
+                message_id=src_msg_id,
+            )
+        except Exception as e:
+            await query.answer(f"⚠️ Could not duplicate: {e}", show_alert=True)
+            return ConversationHandler.END
+        orig_name = src_item.get("filename", f"file_{src_msg_id}")
+        dup_name = f"Copy of {orig_name}"
+        db[str(copied.message_id)] = {
+            "filename":   dup_name,
+            "folder":     src_item.get("folder", "Root"),
+            "message_id": copied.message_id,
+            "type":       src_item.get("type", "document"),
+            "stored_at":  _now_iso(),
+        }
+        save_db(db)
+        await query.answer("📋 Duplicated!", show_alert=False)
+        await query.edit_message_text(
+            f"📋 *Duplicated*\n\n"
+            f"Original: `{orig_name}`\n"
+            f"Copy saved as: `{dup_name}`\n"
+            f"In: {format_breadcrumb(src_item.get('folder', 'Root'))}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
+                ]
             ),
         )
         return ConversationHandler.END
@@ -1743,6 +1791,25 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 
+async def migrate_ist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually re-run the GMT→IST timestamp migration and report results."""
+    if not authorized(update):
+        return await deny(update)
+    db = load_db()
+    _, n = _migrate_timestamps_to_ist(db)
+    if n:
+        save_db(db)
+        await update.message.reply_text(
+            f"✅ *IST Migration complete*\n\nConverted *{n}* timestamp(s) from GMT to IST (+05:30).\n"
+            "_Run again to confirm nothing remains._",
+            parse_mode="Markdown",
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ All timestamps are already in IST. Nothing to migrate.",
+        )
+
+
 async def joinme_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return await deny(update)
@@ -1908,7 +1975,8 @@ app.add_handler(CommandHandler("help",    help_command))
 app.add_handler(CommandHandler("stats",   stats_command))
 app.add_handler(CommandHandler("joinme",  joinme_command))
 app.add_handler(CommandHandler("backup",  backup_command))
-app.add_handler(CommandHandler("restore", restore_command))
+app.add_handler(CommandHandler("restore",     restore_command))
+app.add_handler(CommandHandler("migrate_ist", migrate_ist_command))
 app.add_handler(
     ChatMemberHandler(
         protect_archive_group,
