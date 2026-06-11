@@ -2,7 +2,7 @@ import json
 import os
 from pathlib import Path
 
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -32,10 +32,12 @@ WAIT_STORE_FILE = 2
 # In-memory user state
 # ---------------------------------------------------------------------------
 # user_state[user_id] = {
-#   "mode":   "store" | "retrieve" | "delete",
-#   "path":   str,           e.g. "Root" or "Root/Videos/Edits"
-#   "view":   "folders" | "files",   ← tracks what is currently rendered
-#   "page":   int,
+#   "mode":          "store" | "retrieve" | "delete",
+#   "path":          str,            e.g. "Root" or "Root/Videos/Edits"
+#   "view":          "folders" | "files",
+#   "page":          int,
+#   "last_btn_msg":  int | None,     message_id of the last button-reply we sent
+#   "store_count":   int,            files stored in this session
 # }
 user_state: dict[int, dict] = {}
 
@@ -59,11 +61,10 @@ def save_db(data: dict) -> None:
 
 
 def normalize_path(path: str | None) -> str:
-    """Ensure every path is 'Root' or 'Root/...', no duplicates or trailing slashes."""
     if not path:
         return "Root"
     path = path.strip().strip("/")
-    if path == "" or path == "Root":
+    if path in ("", "Root"):
         return "Root"
     if path.startswith("Root/"):
         path = path[5:]
@@ -72,18 +73,16 @@ def normalize_path(path: str | None) -> str:
 
 
 def get_subfolders_for_path(db: dict, current_path: str) -> list[str]:
-    """Immediate child folder names under current_path."""
     current_path = normalize_path(current_path)
-    prefix = current_path.rstrip("/") + "/"
+    prefix = current_path + "/"
     paths = {normalize_path(item.get("folder", "Root")) for item in db.values()}
     children: set[str] = set()
     for p in paths:
         if not p.startswith(prefix):
             continue
         rest = p[len(prefix):]
-        if not rest:
-            continue
-        children.add(rest.split("/", 1)[0])
+        if rest:
+            children.add(rest.split("/", 1)[0])
     return sorted(children)
 
 
@@ -93,13 +92,23 @@ def get_files_in_folder(db: dict, folder_path: str) -> list[dict]:
             if normalize_path(item.get("folder", "Root")) == folder_path]
 
 
-def delete_folder_tree(db: dict, folder_path: str) -> list[str]:
-    """Remove all DB entries at or under folder_path. Returns deleted keys."""
+def count_all_in_tree(db: dict, folder_path: str) -> int:
+    """Count all files at or under folder_path."""
     folder_path = normalize_path(folder_path)
-    prefix = folder_path.rstrip("/") + "/"
+    prefix = folder_path + "/"
+    return sum(
+        1 for item in db.values()
+        if normalize_path(item.get("folder", "Root")) == folder_path
+        or normalize_path(item.get("folder", "Root")).startswith(prefix)
+    )
+
+
+def delete_folder_tree(db: dict, folder_path: str) -> list[str]:
+    folder_path = normalize_path(folder_path)
+    prefix = folder_path + "/"
     keys = [
         k for k, item in db.items()
-        if normalize_path(item.get("folder", "Root")) in (folder_path,)
+        if normalize_path(item.get("folder", "Root")) == folder_path
         or normalize_path(item.get("folder", "Root")).startswith(prefix)
     ]
     for k in keys:
@@ -108,8 +117,7 @@ def delete_folder_tree(db: dict, folder_path: str) -> list[str]:
 
 
 def format_breadcrumb(path: str) -> str:
-    path = normalize_path(path)
-    return path.replace("/", " › ")
+    return normalize_path(path).replace("/", " › ")
 
 
 def parent_path(path: str) -> str:
@@ -117,6 +125,26 @@ def parent_path(path: str) -> str:
     if path == "Root":
         return "Root"
     return normalize_path(path.rsplit("/", 1)[0])
+
+
+def resolve_filename(message, fallback: str) -> str:
+    """
+    Best-effort filename from a Telegram message.
+    Priority: caption (user-supplied name) → file_name attr → fallback.
+    """
+    # User can set a caption like "my_clip.mp4" to name the file
+    caption = (message.caption or "").strip()
+    if caption:
+        return caption
+
+    if message.document and message.document.file_name:
+        return message.document.file_name
+    if message.video and message.video.file_name:
+        return message.video.file_name
+    if message.audio and message.audio.file_name:
+        return message.audio.file_name
+    # Photos and camera-recorded videos have no native filename
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +164,29 @@ async def deny(update: Update) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Button-message tracking helpers
+# ---------------------------------------------------------------------------
+
+async def clear_last_btn_msg(context: ContextTypes.DEFAULT_TYPE, chat_id: int, state: dict) -> None:
+    """
+    Strip the inline keyboard from the previous store-confirmation message
+    so it becomes plain text, leaving only the last message with buttons.
+    """
+    msg_id = state.get("last_btn_msg")
+    if not msg_id:
+        return
+    try:
+        await context.bot.edit_message_reply_markup(
+            chat_id=chat_id,
+            message_id=msg_id,
+            reply_markup=None,
+        )
+    except Exception:
+        pass  # already edited / deleted / too old — silently ignore
+    state["last_btn_msg"] = None
+
+
+# ---------------------------------------------------------------------------
 # Keyboard builders
 # ---------------------------------------------------------------------------
 
@@ -149,7 +200,6 @@ def build_paginated_keyboard(
     page = max(0, min(page, total_pages - 1))
 
     keyboard = list(extra_top_rows or [])
-
     chunk = items[page * PAGE_SIZE : page * PAGE_SIZE + PAGE_SIZE]
     for label, cb in chunk:
         keyboard.append([InlineKeyboardButton(label, callback_data=cb)])
@@ -174,40 +224,6 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📤 Retrieve", callback_data="mode:retrieve")],
         [InlineKeyboardButton("🗑 Delete",   callback_data="mode:delete")],
     ])
-
-
-def folder_list_keyboard(
-    children: list[str], page: int, mode: str, path: str
-) -> InlineKeyboardMarkup:
-    items = [(f"📁 {name}", f"cd:{name}") for name in children]
-
-    top: list[list[InlineKeyboardButton]] = []
-
-    # In store mode: offer to store directly in current folder
-    if mode == "store":
-        top.append([InlineKeyboardButton("📥 Store here", callback_data="action:store_here")])
-        top.append([InlineKeyboardButton("➕ New Folder",  callback_data="action:new_folder")])
-
-    if normalize_path(path) != "Root":
-        top.append([InlineKeyboardButton("⬆ Up", callback_data="action:up")])
-
-    top.append([InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")])
-
-    return build_paginated_keyboard(items, page, extra_top_rows=top)
-
-
-def files_in_folder_keyboard(
-    files: list[dict], page: int, mode: str
-) -> InlineKeyboardMarkup:
-    if mode == "delete":
-        items = [(f"🗑 {f['filename']}", f"del_file:{f['message_id']}") for f in files]
-    else:
-        items = [(f"📄 {f['filename']}", f"get_file:{f['message_id']}") for f in files]
-
-    top  = [[InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")]]
-    bot_ = [[InlineKeyboardButton("🏠 Main Menu",       callback_data="action:menu")]]
-
-    return build_paginated_keyboard(items, page, extra_top_rows=top, extra_bottom_rows=bot_)
 
 
 # ---------------------------------------------------------------------------
@@ -249,50 +265,60 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 # ---------------------------------------------------------------------------
-# View helpers
+# View helpers  (all edit the inline message in place)
 # ---------------------------------------------------------------------------
 
 async def show_folder_list(query, user_id: int) -> None:
     db    = load_db()
-    state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "view": "folders", "page": 0})
+    state = user_state.setdefault(
+        user_id, {"mode": "retrieve", "path": "Root", "view": "folders", "page": 0,
+                  "last_btn_msg": None, "store_count": 0}
+    )
     state["view"] = "folders"
 
-    mode  = state["mode"]
-    page  = state.get("page", 0)
-    path  = normalize_path(state.get("path", "Root"))
-
+    mode     = state["mode"]
+    page     = state.get("page", 0)
+    path     = normalize_path(state.get("path", "Root"))
     children = get_subfolders_for_path(db, path)
+
+    # Annotate subfolders with file counts in retrieve/delete modes
+    if mode in ("retrieve", "delete") and children:
+        def folder_label(name: str) -> str:
+            full = normalize_path(f"{path}/{name}")
+            n = count_all_in_tree(db, full)
+            return f"📁 {name}  ({n})" if n else f"📁 {name}"
+        items = [(folder_label(name), f"cd:{name}") for name in children]
+    else:
+        items = [(f"📁 {name}", f"cd:{name}") for name in children]
 
     top: list[list[InlineKeyboardButton]] = []
 
-    # Store mode always shows "Store here" + "New Folder"
     if mode == "store":
-        top.append([InlineKeyboardButton("📥 Store here", callback_data="action:store_here")])
-        top.append([InlineKeyboardButton("➕ New Folder",  callback_data="action:new_folder")])
-
+        top.append([InlineKeyboardButton("📥 Store here",  callback_data="action:store_here")])
+        top.append([InlineKeyboardButton("➕ New Folder",   callback_data="action:new_folder")])
     if path != "Root":
-        top.append([InlineKeyboardButton("⬆ Up", callback_data="action:up")])
+        top.append([InlineKeyboardButton("⬆ Up",           callback_data="action:up")])
+    top.append([InlineKeyboardButton("🏠 Main Menu",        callback_data="action:menu")])
 
-    top.append([InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")])
+    total_files = len(get_files_in_folder(db, path))
+    file_info   = f"  ·  {total_files} file{'s' if total_files != 1 else ''} here" if total_files else ""
 
     if not children:
         if mode == "store":
-            text = f"📂 *{format_breadcrumb(path)}* — no subfolders.\n\nStore here or create a new folder:"
+            text = f"📂 *{format_breadcrumb(path)}*{file_info} — no subfolders.\n\nStore here or create a new folder:"
         elif mode == "delete":
-            text = f"🗑 *{format_breadcrumb(path)}* — no subfolders."
+            text = f"🗑 *{format_breadcrumb(path)}*{file_info} — no subfolders."
         else:
-            text = f"📁 *{format_breadcrumb(path)}* — no subfolders."
+            text = f"📁 *{format_breadcrumb(path)}*{file_info} — no subfolders."
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(top))
         return
 
-    items = [(f"📁 {name}", f"cd:{name}") for name in children]
-
     if mode == "store":
-        text = f"📁 *{format_breadcrumb(path)}* — choose a folder or store here:"
+        text = f"📁 *{format_breadcrumb(path)}*{file_info}\n\nChoose a subfolder or store here:"
     elif mode == "delete":
-        text = f"🗑 *{format_breadcrumb(path)}* — select a folder to manage:"
+        text = f"🗑 *{format_breadcrumb(path)}*{file_info}\n\nSelect a folder to manage:"
     else:
-        text = f"📁 *{format_breadcrumb(path)}* — select a folder to browse:"
+        text = f"📁 *{format_breadcrumb(path)}*{file_info}\n\nSelect a folder to browse:"
 
     kb = build_paginated_keyboard(items, page, extra_top_rows=top)
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -300,7 +326,10 @@ async def show_folder_list(query, user_id: int) -> None:
 
 async def show_files_in_folder(query, user_id: int) -> None:
     db    = load_db()
-    state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "view": "files", "page": 0})
+    state = user_state.setdefault(
+        user_id, {"mode": "retrieve", "path": "Root", "view": "files", "page": 0,
+                  "last_btn_msg": None, "store_count": 0}
+    )
     state["view"] = "files"
 
     path  = normalize_path(state.get("path", "Root"))
@@ -315,7 +344,7 @@ async def show_files_in_folder(query, user_id: int) -> None:
         extra: list[list] = [back_row]
         if mode == "delete":
             extra.append([InlineKeyboardButton(
-                f"🗑 Delete folder '{format_breadcrumb(path)}'",
+                f"🗑 Delete empty folder",
                 callback_data="action:delete_this_folder",
             )])
         extra.append(menu_row)
@@ -326,30 +355,35 @@ async def show_files_in_folder(query, user_id: int) -> None:
         )
         return
 
+    count_label = f"{len(files)} file{'s' if len(files) != 1 else ''}"
+
     if mode == "delete":
-        # Extra bottom row: delete entire folder
         bot_ = [
             [InlineKeyboardButton(
-                f"🗑 Delete entire folder ({len(files)} files)",
+                f"🗑 Delete entire folder ({count_label})",
                 callback_data="action:delete_this_folder",
             )],
             menu_row,
         ]
         items = [(f"🗑 {f['filename']}", f"del_file:{f['message_id']}") for f in files]
         kb    = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=bot_)
-        text  = f"🗑 *{format_breadcrumb(path)}* — tap a file to delete it:"
+        text  = f"🗑 *{format_breadcrumb(path)}* — {count_label}\n\nTap a file to delete it:"
     else:
         items = [(f"📄 {f['filename']}", f"get_file:{f['message_id']}") for f in files]
         kb    = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
-        text  = f"📂 *{format_breadcrumb(path)}* — tap a file to receive it:"
+        text  = f"📂 *{format_breadcrumb(path)}* — {count_label}\n\nTap a file to receive it:"
 
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def show_store_prompt(query, user_id: int) -> int:
-    """Show the 'send me a file' prompt for store mode."""
-    state = user_state.setdefault(user_id, {"mode": "store", "path": "Root", "view": "files", "page": 0})
-    state["view"] = "files"
+    state = user_state.setdefault(
+        user_id, {"mode": "store", "path": "Root", "view": "files", "page": 0,
+                  "last_btn_msg": None, "store_count": 0}
+    )
+    state["view"]        = "files"
+    state["store_count"] = 0
+    state["last_btn_msg"] = None
     path = normalize_path(state.get("path", "Root"))
 
     kb = InlineKeyboardMarkup([
@@ -357,7 +391,7 @@ async def show_store_prompt(query, user_id: int) -> int:
         [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
-        f"📁 Storing into *{format_breadcrumb(path)}*\n\nSend me the file(s) to store.",
+        f"📁 *{format_breadcrumb(path)}*\n\nSend file(s) — you can send many in a row.",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -378,7 +412,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     data  = query.data
-    state = user_state.setdefault(user_id, {"mode": "retrieve", "path": "Root", "view": "folders", "page": 0})
+    state = user_state.setdefault(
+        user_id, {"mode": "retrieve", "path": "Root", "view": "folders", "page": 0,
+                  "last_btn_msg": None, "store_count": 0}
+    )
 
     # ── Main menu ──────────────────────────────────────────────────────────
     if data == "action:menu":
@@ -393,56 +430,51 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Mode selection ─────────────────────────────────────────────────────
     if data.startswith("mode:"):
         mode = data.split(":", 1)[1]
-        user_state[user_id] = {"mode": mode, "path": "Root", "view": "folders", "page": 0}
+        user_state[user_id] = {
+            "mode": mode, "path": "Root", "view": "folders", "page": 0,
+            "last_btn_msg": None, "store_count": 0,
+        }
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
     # ── Pagination ─────────────────────────────────────────────────────────
-    # BUG FIX: use state["view"] to decide what to re-render, not always folder list
     if data.startswith("page:"):
-        page = int(data.split(":", 1)[1])
-        state["page"] = page
+        state["page"] = int(data.split(":", 1)[1])
         if state.get("view") == "files":
-            if state["mode"] == "store":
-                # store mode file view = store prompt, no pagination needed; shouldn't happen
-                await show_folder_list(query, user_id)
-            else:
-                await show_files_in_folder(query, user_id)
+            await show_files_in_folder(query, user_id)
         else:
             await show_folder_list(query, user_id)
         return ConversationHandler.END
 
     # ── Up one level ───────────────────────────────────────────────────────
     if data == "action:up":
-        current = normalize_path(state.get("path", "Root"))
-        state["path"] = parent_path(current)
+        state["path"] = parent_path(normalize_path(state.get("path", "Root")))
         state["page"] = 0
         state["view"] = "folders"
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # ── Enter subfolder (cd) ───────────────────────────────────────────────
+    # ── Enter subfolder ────────────────────────────────────────────────────
     if data.startswith("cd:"):
-        folder_name = data[3:]
-        current     = normalize_path(state.get("path", "Root"))
-        new_path    = normalize_path(f"{current}/{folder_name}")
+        folder_name  = data[3:]
+        current      = normalize_path(state.get("path", "Root"))
+        new_path     = normalize_path(f"{current}/{folder_name}")
         state["path"] = new_path
         state["page"] = 0
-
-        mode = state["mode"]
+        mode          = state["mode"]
 
         if mode == "delete":
-            # Show a choice: open folder OR delete whole tree
-            db             = load_db()
-            files_here     = len(get_files_in_folder(db, new_path))
+            db              = load_db()
+            files_here      = len(get_files_in_folder(db, new_path))
             subfolders_here = len(get_subfolders_for_path(db, new_path))
+            total_tree      = count_all_in_tree(db, new_path)
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(
-                    f"📂 Open folder ({files_here} files, {subfolders_here} subfolders)",
+                    f"📂 Browse ({files_here} files · {subfolders_here} subfolders)",
                     callback_data="action:open_del_folder",
                 )],
                 [InlineKeyboardButton(
-                    "🗑 Delete folder + all contents",
+                    f"🗑 Delete all ({total_tree} total files)",
                     callback_data="action:ask_del_tree",
                 )],
                 [InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")],
@@ -450,7 +482,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ])
             await query.edit_message_text(
                 f"🗑 *{format_breadcrumb(new_path)}*\n"
-                f"Files: {files_here} · Subfolders: {subfolders_here}\n\nWhat do you want to do?",
+                f"Files here: {files_here}  ·  Subfolders: {subfolders_here}  ·  Total in tree: {total_tree}\n\n"
+                f"What do you want to do?",
                 parse_mode="Markdown",
                 reply_markup=kb,
             )
@@ -470,7 +503,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "action:store_here":
         return await show_store_prompt(query, user_id)
 
-    # ── New folder: ask for name ───────────────────────────────────────────
+    # ── New folder ─────────────────────────────────────────────────────────
     if data == "action:new_folder":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("❌ Cancel", callback_data="action:back_folders")],
@@ -489,7 +522,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # ── Back to file list (after cancel on a delete confirm) ──────────────
+    # ── Back to file list ─────────────────────────────────────────────────
     if data == "action:back_files":
         state["page"] = 0
         state["view"] = "files"
@@ -505,6 +538,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 from_chat_id=ARCHIVE_CHAT_ID,
                 message_id=message_id,
             )
+            await query.answer("✅ File sent!", show_alert=False)
         except Exception as e:
             await query.message.reply_text(f"⚠️ Could not retrieve file: {e}")
         return ConversationHandler.END
@@ -513,25 +547,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # DELETE flow
     # ==========================================================================
 
-    # ── Open folder in delete mode ─────────────────────────────────────────
     if data == "action:open_del_folder":
         state["page"] = 0
         state["view"] = "files"
         await show_files_in_folder(query, user_id)
         return ConversationHandler.END
 
-    # ── Ask to confirm tree-delete ─────────────────────────────────────────
-    if data == "action:ask_del_tree" or data == "action:delete_this_folder":
-        path = normalize_path(state.get("path", "Root"))
-        db   = load_db()
-
-        prefix = path.rstrip("/") + "/"
-        total  = sum(
-            1 for item in db.values()
-            if normalize_path(item.get("folder", "Root")) == path
-            or normalize_path(item.get("folder", "Root")).startswith(prefix)
-        )
-        warning = "\n\n⚠ This folder has many files!" if total >= 20 else ""
+    if data in ("action:ask_del_tree", "action:delete_this_folder"):
+        path  = normalize_path(state.get("path", "Root"))
+        db    = load_db()
+        total = count_all_in_tree(db, path)
+        warn  = "\n\n⚠ This folder contains a lot of files!" if total >= 20 else ""
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚠ Yes, delete everything", callback_data="action:confirm_del_tree")],
             [InlineKeyboardButton("❌ Cancel",                 callback_data="action:back_folders")],
@@ -539,18 +565,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"⚠ *WARNING*\n\n"
             f"Folder: *{format_breadcrumb(path)}*\n"
-            f"Total files: {total}{warning}\n\n"
+            f"Total files to delete: {total}{warn}\n\n"
             f"This cannot be undone.",
             parse_mode="Markdown",
             reply_markup=kb,
         )
         return ConversationHandler.END
 
-    # ── Confirmed: delete whole tree ───────────────────────────────────────
     if data == "action:confirm_del_tree":
-        path = normalize_path(state.get("path", "Root"))
-        db   = load_db()
-        keys = delete_folder_tree(db, path)
+        path  = normalize_path(state.get("path", "Root"))
+        db    = load_db()
+        keys  = delete_folder_tree(db, path)
         save_db(db)
 
         for k in keys:
@@ -559,18 +584,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        # Go up one level after deletion
+        deleted_label = format_breadcrumb(path)
+        # Navigate to parent folder list immediately
         state["path"] = parent_path(path)
         state["page"] = 0
         state["view"] = "folders"
 
-        await query.edit_message_text(
-            f"✅ *{format_breadcrumb(path)}* and {len(keys)} file(s) deleted.",
-            parse_mode="Markdown",
-        )
+        # Show a brief success toast then render the parent folder list
+        await query.answer(f"✅ '{deleted_label}' deleted ({len(keys)} files).", show_alert=True)
+        await show_folder_list(query, user_id)
         return ConversationHandler.END
 
-    # ── Delete: single file tapped → confirm ──────────────────────────────
     if data.startswith("del_file:"):
         msg_id = int(data.split(":", 1)[1])
         db     = load_db()
@@ -587,7 +611,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
 
-    # ── Confirmed: delete single file ─────────────────────────────────────
     if data.startswith("confirm_del_file:"):
         msg_id = int(data.split(":", 1)[1])
         db     = load_db()
@@ -623,25 +646,28 @@ async def receive_new_folder_name(
     if not folder_name:
         await update.message.reply_text("Folder name cannot be empty. Try again:")
         return WAIT_NEW_FOLDER
-
-    # Disallow slashes in folder names (would break path logic)
     if "/" in folder_name:
         await update.message.reply_text("Folder name cannot contain '/'. Try again:")
         return WAIT_NEW_FOLDER
 
-    state   = user_state.setdefault(user_id, {"mode": "store", "path": "Root", "view": "folders", "page": 0})
-    current = normalize_path(state.get("path", "Root"))
+    state    = user_state.setdefault(
+        user_id, {"mode": "store", "path": "Root", "view": "folders", "page": 0,
+                  "last_btn_msg": None, "store_count": 0}
+    )
+    current  = normalize_path(state.get("path", "Root"))
     new_path = normalize_path(f"{current}/{folder_name}")
 
-    state["path"] = new_path
-    state["page"] = 0
-    state["view"] = "folders"
+    state["path"]        = new_path
+    state["page"]        = 0
+    state["view"]        = "folders"
+    state["store_count"] = 0
+    state["last_btn_msg"] = None
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store here",   callback_data="action:store_here")],
-        [InlineKeyboardButton("➕ New Subfolder", callback_data="action:new_folder")],
-        [InlineKeyboardButton("⬆ Up",            callback_data="action:up")],
-        [InlineKeyboardButton("🏠 Main Menu",    callback_data="action:menu")],
+        [InlineKeyboardButton("📥 Store here",    callback_data="action:store_here")],
+        [InlineKeyboardButton("➕ New Subfolder",  callback_data="action:new_folder")],
+        [InlineKeyboardButton("⬆ Up",             callback_data="action:up")],
+        [InlineKeyboardButton("🏠 Main Menu",     callback_data="action:menu")],
     ])
     await update.message.reply_text(
         f"✅ Folder *{format_breadcrumb(new_path)}* created.\n\nStore here, add subfolders, or go up:",
@@ -657,9 +683,9 @@ async def receive_store_file(
     if not authorized(update):
         return await deny(update)
 
-    user_id     = update.effective_user.id
-    message     = update.message
-    state       = user_state.get(user_id, {})
+    user_id = update.effective_user.id
+    message = update.message
+    state   = user_state.get(user_id, {})
     folder_path = normalize_path(state.get("path", "Root"))
 
     if not (message.document or message.photo or message.video or message.audio):
@@ -672,21 +698,22 @@ async def receive_store_file(
         message_id=message.message_id,
     )
 
-    filename: str | None = None
-    file_type: str | None = None
-
+    # ── Filename resolution (FIX: preserve original names) ─────────────────
+    file_type: str
     if message.document:
-        filename  = message.document.file_name
         file_type = "document"
+        filename  = resolve_filename(message, f"file_{copied.message_id}")
     elif message.photo:
-        filename  = f"photo_{copied.message_id}.jpg"
         file_type = "photo"
+        filename  = resolve_filename(message, f"photo_{copied.message_id}.jpg")
     elif message.video:
-        filename  = message.video.file_name or f"video_{copied.message_id}.mp4"
         file_type = "video"
+        filename  = resolve_filename(message, f"video_{copied.message_id}.mp4")
     elif message.audio:
-        filename  = message.audio.file_name or f"audio_{copied.message_id}"
         file_type = "audio"
+        filename  = resolve_filename(message, f"audio_{copied.message_id}")
+    else:
+        return WAIT_STORE_FILE
 
     db = load_db()
     db[str(copied.message_id)] = {
@@ -697,16 +724,35 @@ async def receive_store_file(
     }
     save_db(db)
 
+    # ── Update session counter ─────────────────────────────────────────────
+    state["store_count"] = state.get("store_count", 0) + 1
+    count = state["store_count"]
+
+    # ── Clear buttons from previous confirmation message ───────────────────
+    await clear_last_btn_msg(context, message.chat.id, state)
+
+    # ── Plain-text ack (no buttons) ────────────────────────────────────────
+    plain_ack = await message.reply_text(
+        f"✅ `{filename}` → *{format_breadcrumb(folder_path)}*",
+        parse_mode="Markdown",
+    )
+
+    # ── Button message (replaces the previous one) ─────────────────────────
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store another here", callback_data="action:store_here")],
-        [InlineKeyboardButton("⬆ Up",                  callback_data="action:up")],
-        [InlineKeyboardButton("🏠 Main Menu",          callback_data="action:menu")],
+        [InlineKeyboardButton(
+            f"📥 Store another  ({count} stored)",
+            callback_data="action:store_here",
+        )],
+        [InlineKeyboardButton("⬆ Up",         callback_data="action:up")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
-    await message.reply_text(
-        f"✅ *{filename}* stored in *{format_breadcrumb(folder_path)}*.",
+    btn_msg = await message.reply_text(
+        f"📁 *{format_breadcrumb(folder_path)}*\n\nSend more files or choose an action:",
         parse_mode="Markdown",
         reply_markup=kb,
     )
+    state["last_btn_msg"] = btn_msg.message_id
+
     return WAIT_STORE_FILE
 
 
