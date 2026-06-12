@@ -59,9 +59,9 @@ from telegram.ext import (
 # Config
 # ---------------------------------------------------------------------------
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8860089092:AAFKLnebRVd_YyVWhVWfZa5mGFflFc_wvRw")
-ARCHIVE_CHAT_ID = int(os.environ.get("ARCHIVE_CHAT_ID", "-1003910547391"))
-OWNER_ID = int(os.environ.get("OWNER_ID", "6618474423"))
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+ARCHIVE_CHAT_ID = int(os.environ["ARCHIVE_CHAT_ID"])
+OWNER_ID = int(os.environ["OWNER_ID"])
 
 _DB_PATH = Path(os.environ.get("DB_PATH", "metadata.json"))
 _DB_DIR = _DB_PATH.parent
