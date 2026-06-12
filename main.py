@@ -2250,6 +2250,9 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
 
+    def u(n):
+        return n * SCALE
+
     def rrect(x1, y1, x2, y2, r=R, fill=CARD):
         draw.rounded_rectangle([x1, y1, x2, y2], radius=r, fill=fill)
 
@@ -2261,12 +2264,12 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     # Header
     sh = active["header"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    draw.text((PAD + 14, cy + 10), "Disk Report", font=F20, fill=TEXT1)
-    draw.text((PAD + 14, cy + 34), vol_dir, font=F10, fill=TEXT3)
+    draw.text((PAD + u(14), cy + u(10)), "Disk Report", font=F20, fill=TEXT1)
+    draw.text((PAD + u(14), cy + u(34)), vol_dir, font=F10, fill=TEXT3)
     pill_text = f"up {uptime_str}"
-    pw = int(draw.textlength(pill_text, font=F11)) + 16
-    rrect(W - PAD - pw - 4, cy + 12, W - PAD - 4, cy + 32, r=10, fill=(30, 27, 60))
-    draw.text((W - PAD - pw + 4, cy + 16), pill_text, font=F11, fill=(167, 139, 250))
+    pw = int(draw.textlength(pill_text, font=F11)) + u(16)
+    rrect(W - PAD - pw - u(4), cy + u(12), W - PAD - u(4), cy + u(32), r=u(10), fill=(30, 27, 60))
+    draw.text((W - PAD - pw + u(4), cy + u(16)), pill_text, font=F11, fill=(167, 139, 250))
     cy += sh + GAP
 
     # 3 stat cards
@@ -2281,9 +2284,9 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     for i, (lbl, val, sub) in enumerate(stats):
         x = PAD + i * (cw + GAP)
         rrect(x, cy, x + cw, cy + sh)
-        label(x + 10, cy + 9, lbl)
-        draw.text((x + 10, cy + 24), val, font=F14, fill=TEXT1)
-        draw.text((x + 10, cy + 46), sub, font=F10, fill=TEXT3)
+        label(x + u(10), cy + u(9), lbl)
+        draw.text((x + u(10), cy + u(24)), val, font=F14, fill=TEXT1)
+        draw.text((x + u(10), cy + u(46)), sub, font=F10, fill=TEXT3)
     cy += sh + GAP
 
     # Disk bar
@@ -2291,54 +2294,54 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     rrect(PAD, cy, W - PAD, cy + sh)
     pct = (used_disk / total_disk * 100) if total_disk else 0
     bar_color = GREEN if pct < 70 else (AMBER if pct < 90 else RED)
-    label(PAD + 12, cy + 9, f"disk usage  -  {pct:.0f}% full  -  {_fmt_bytes(free_disk)} free")
-    bx, by = PAD + 12, cy + 26
-    bw, bh = W - PAD * 2 - 24, 8
-    rrect(bx, by, bx + bw, by + bh, r=4, fill=DIVIDER)
-    fill_w = max(4, int(bw * pct / 100))
-    rrect(bx, by, bx + fill_w, by + bh, r=4, fill=bar_color)
-    draw.text((bx, by + 14), "0", font=F10, fill=TEXT3)
-    draw.text((bx + bw // 2 - 10, by + 14), _fmt_bytes(total_disk // 2), font=F10, fill=TEXT3)
-    draw.text((bx + bw - 32, by + 14), _fmt_bytes(total_disk), font=F10, fill=TEXT3)
+    label(PAD + u(12), cy + u(9), f"disk usage  -  {pct:.0f}% full  -  {_fmt_bytes(free_disk)} free")
+    bx, by = PAD + u(12), cy + u(26)
+    bw, bh = W - PAD * 2 - u(24), u(8)
+    rrect(bx, by, bx + bw, by + bh, r=u(4), fill=DIVIDER)
+    fill_w = max(u(4), int(bw * pct / 100))
+    rrect(bx, by, bx + fill_w, by + bh, r=u(4), fill=bar_color)
+    draw.text((bx, by + u(14)), "0", font=F10, fill=TEXT3)
+    draw.text((bx + bw // 2 - u(10), by + u(14)), _fmt_bytes(total_disk // 2), font=F10, fill=TEXT3)
+    draw.text((bx + bw - u(32), by + u(14)), _fmt_bytes(total_disk), font=F10, fill=TEXT3)
     cy += sh + GAP
 
     # Type breakdown
     sh = active["types"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    label(PAD + 12, cy + 9, f"file type breakdown  -  {len(db)} total")
+    label(PAD + u(12), cy + u(9), f"file type breakdown  -  {len(db)} total")
     DOT_COLORS = [ACCENT, TEAL, AMBER, GREEN, (236, 72, 153), (251, 146, 60)]
     type_order = sorted(type_counts.items(), key=lambda x: -x[1])
     total_files = len(db) or 1
-    seg_x = PAD + 12
-    bar_w = W - PAD * 2 - 24
+    seg_x = PAD + u(12)
+    bar_w = W - PAD * 2 - u(24)
     for idx2, (t, cnt) in enumerate(type_order):
-        seg_w = max(2, int(bar_w * cnt / total_files))
-        rrect(seg_x, cy + 24, seg_x + seg_w, cy + 30, r=3, fill=DOT_COLORS[idx2 % len(DOT_COLORS)])
+        seg_w = max(u(2), int(bar_w * cnt / total_files))
+        rrect(seg_x, cy + u(24), seg_x + seg_w, cy + u(30), r=u(3), fill=DOT_COLORS[idx2 % len(DOT_COLORS)])
         seg_x += seg_w
-    ry = cy + 38
+    ry = cy + u(38)
     half = len(type_order) // 2 + len(type_order) % 2
     for idx2, (t, cnt) in enumerate(type_order):
-        col_x = PAD + 12 if idx2 < half else W // 2 + 10
-        row_y = ry + (idx2 % half) * 18
+        col_x = PAD + u(12) if idx2 < half else W // 2 + u(10)
+        row_y = ry + (idx2 % half) * u(18)
         dc = DOT_COLORS[idx2 % len(DOT_COLORS)]
-        draw.ellipse([col_x, row_y + 4, col_x + 7, row_y + 11], fill=dc)
-        draw.text((col_x + 14, row_y), t.capitalize(), font=F11, fill=TEXT2)
-        draw.text((col_x + 14 + 80, row_y), str(cnt), font=F11, fill=TEXT1)
+        draw.ellipse([col_x, row_y + u(4), col_x + u(7), row_y + u(11)], fill=dc)
+        draw.text((col_x + u(14), row_y), t.capitalize(), font=F11, fill=TEXT2)
+        draw.text((col_x + u(14) + u(80), row_y), str(cnt), font=F11, fill=TEXT1)
     cy += sh + GAP
 
     # Top 5 largest
     if top5:
         sh = active["top5"]
         rrect(PAD, cy, W - PAD, cy + sh)
-        label(PAD + 12, cy + 9, "top 5 largest files")
+        label(PAD + u(12), cy + u(9), "top 5 largest files")
         max_sz = top5[0]["file_size"] or 1
         for idx2, item in enumerate(top5):
-            fy = cy + 26 + idx2 * 17
+            fy = cy + u(26) + idx2 * u(17)
             fname = item.get("filename", "?")
             fname = fname if len(fname) <= 42 else fname[:41] + "\u2026"
             sz_str = _fmt_bytes(item.get("file_size", 0))
-            draw.text((PAD + 12, fy), fname, font=F10, fill=TEXT2)
-            draw.text((W - PAD - 12 - int(draw.textlength(sz_str, font=F10)), fy), sz_str, font=F10, fill=ACCENT)
+            draw.text((PAD + u(12), fy), fname, font=F10, fill=TEXT2)
+            draw.text((W - PAD - u(12) - int(draw.textlength(sz_str, font=F10)), fy), sz_str, font=F10, fill=ACCENT)
         cy += sh + GAP
 
     # Oldest / newest
@@ -2348,60 +2351,60 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     for side, item in enumerate([oldest, newest]):
         lbl_text = "oldest file" if side == 0 else "newest file"
         x = PAD if side == 0 else PAD + half_w + GAP
-        label(x + 10, cy + 9, lbl_text)
+        label(x + u(10), cy + u(9), lbl_text)
         if item:
-            draw.text((x + 10, cy + 24), item.get("stored_at", "")[:10], font=F12, fill=TEXT1)
+            draw.text((x + u(10), cy + u(24)), item.get("stored_at", "")[:10], font=F12, fill=TEXT1)
             fn = item.get("filename", "?")
             fn = fn if len(fn) <= 28 else fn[:27] + "\u2026"
-            draw.text((x + 10, cy + 42), fn, font=F10, fill=TEXT3)
+            draw.text((x + u(10), cy + u(42)), fn, font=F10, fill=TEXT3)
         else:
-            draw.text((x + 10, cy + 24), "n/a", font=F12, fill=TEXT3)
+            draw.text((x + u(10), cy + u(24)), "n/a", font=F12, fill=TEXT3)
     cy += sh + GAP
 
     # Metadata files
     visible_meta = [(p, s) for p, s in meta_info if s is not None]
     sh = active["meta"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    label(PAD + 12, cy + 9, f"metadata files  -  last save {last_save_str}")
-    my = cy + 26
+    label(PAD + u(12), cy + u(9), f"metadata files  -  last save {last_save_str}")
+    my = cy + u(26)
     for p, s in visible_meta:
         is_live = (p == DB_FILE)
         name_color = TEXT1 if is_live else TEXT3
         sz_str = _fmt_bytes(s)
-        draw.text((PAD + 12, my), p.name, font=F11, fill=name_color)
-        draw.text((W - PAD - 12 - int(draw.textlength(sz_str, font=F11)), my), sz_str,
+        draw.text((PAD + u(12), my), p.name, font=F11, fill=name_color)
+        draw.text((W - PAD - u(12) - int(draw.textlength(sz_str, font=F11)), my), sz_str,
                   font=F11, fill=ACCENT if is_live else TEXT3)
-        my += 17
+        my += u(17)
     cy += sh + GAP
 
     # Backup health
     sh = active["backups"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    label(PAD + 12, cy + 9, "backup health")
+    label(PAD + u(12), cy + u(9), "backup health")
     ok_count = backup_health.count("ok")
-    pill_w = (W - PAD * 2 - 24 - GAP * (BACKUP_COUNT - 1)) // BACKUP_COUNT
+    pill_w = (W - PAD * 2 - u(24) - GAP * (BACKUP_COUNT - 1)) // BACKUP_COUNT
     for i, bstatus in enumerate(backup_health):
-        bx2 = PAD + 12 + i * (pill_w + GAP)
+        bx2 = PAD + u(12) + i * (pill_w + GAP)
         bc = GREEN if bstatus == "ok" else (RED if bstatus == "corrupt" else TEXT3)
         bg2 = (20, 30, 20) if bstatus == "ok" else (30, 20, 20)
-        rrect(bx2, cy + 24, bx2 + pill_w, cy + 40, r=6, fill=bg2)
-        dot_x = bx2 + pill_w // 2 - 4
-        draw.ellipse([dot_x, cy + 30, dot_x + 8, cy + 38], fill=bc)
-        draw.text((bx2 + pill_w // 2 - 5, cy + 13), f"B.{i + 1}", font=F10, fill=TEXT3)
+        rrect(bx2, cy + u(24), bx2 + pill_w, cy + u(40), r=u(6), fill=bg2)
+        dot_x = bx2 + pill_w // 2 - u(4)
+        draw.ellipse([dot_x, cy + u(30), dot_x + u(8), cy + u(38)], fill=bc)
+        draw.text((bx2 + pill_w // 2 - u(5), cy + u(13)), f"B.{i + 1}", font=F10, fill=TEXT3)
     issues = [f"backup.{i + 1} {backup_health[i]}" for i in range(BACKUP_COUNT) if backup_health[i] != "ok"]
     summary = f"{ok_count} / {BACKUP_COUNT} healthy"
     if issues:
         summary += "  �  " + ",  ".join(issues)
-    draw.text((PAD + 12, cy + 44), summary, font=F10, fill=TEXT3)
+    draw.text((PAD + u(12), cy + u(44)), summary, font=F10, fill=TEXT3)
     cy += sh + GAP
 
     # Footer
     sh = active["footer"]
     db_ok = db_path_env is not None
     db_text = f"DB_PATH  {db_path_env}  OK" if db_ok else "DB_PATH not set  !!  metadata may not be on volume"
-    draw.text((PAD + 4, cy + 10), db_text, font=F10, fill=GREEN if db_ok else RED)
+    draw.text((PAD + u(4), cy + u(10)), db_text, font=F10, fill=GREEN if db_ok else RED)
     ts = _now_iso()[:19].replace("T", "  ")
-    draw.text((W - PAD - int(draw.textlength(ts, font=F10)) - 4, cy + 10), ts, font=F10, fill=TEXT3)
+    draw.text((W - PAD - int(draw.textlength(ts, font=F10)) - u(4), cy + u(10)), ts, font=F10, fill=TEXT3)
 
     # Send
     buf = io.BytesIO()
