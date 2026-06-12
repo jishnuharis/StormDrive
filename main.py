@@ -2240,7 +2240,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         "top5": (max(50, 30 + 18 * len(top5)) * SCALE if top5 else 0),
         "dates": 62 * SCALE,
         "meta": (30 + 18 * len([p for p, s in meta_info if s is not None])) * SCALE,
-        "backups": 52 * SCALE,
+        "backups": 70 * SCALE,
         "footer": 34 * SCALE,
     }
     active = {k: v for k, v in SECTION_HEIGHTS.items() if v > 0}
@@ -2397,7 +2397,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     # Footer
     sh = active["footer"]
     db_ok = db_path_env is not None
-    db_text = f"DB_PATH  {db_path_env}  \u2714" if db_ok else "DB_PATH not set  \u26a0  metadata may not be on volume"
+    db_text = f"DB_PATH  {db_path_env}  OK" if db_ok else "DB_PATH not set  !!  metadata may not be on volume"
     draw.text((PAD + 4, cy + 10), db_text, font=F10, fill=GREEN if db_ok else RED)
     ts = _now_iso()[:19].replace("T", "  ")
     draw.text((W - PAD - int(draw.textlength(ts, font=F10)) - 4, cy + 10), ts, font=F10, fill=TEXT3)
