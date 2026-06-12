@@ -2226,11 +2226,11 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         except Exception:
             return ImageFont.load_default()
 
-    F10 = load_font(11)
-    F11 = load_font(12)
-    F12 = load_font(13)
-    F14 = load_font(14, bold=True)
-    F20 = load_font(20, bold=True)
+    F10 = load_font(14)
+    F11 = load_font(15)
+    F12 = load_font(16)
+    F14 = load_font(17, bold=True)
+    F20 = load_font(23, bold=True)
 
     half_types = (len(type_counts) + 1) // 2
     SECTION_HEIGHTS = {
