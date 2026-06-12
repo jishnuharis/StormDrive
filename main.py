@@ -2220,28 +2220,37 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     R = 8 * SCALE
 
     def load_font(size: int, bold: bool = False):
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans{}.ttf".format("-Bold" if bold else ""),
+            "/usr/share/fonts/truetype/liberation/LiberationSans-{}.ttf".format("Bold" if bold else "Regular"),
+            "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        ]
+        for path in candidates:
+            try:
+                return ImageFont.truetype(path, size * SCALE)
+            except Exception:
+                continue
         try:
-            path = "/usr/share/fonts/truetype/dejavu/DejaVuSans{}.ttf".format("-Bold" if bold else "")
-            return ImageFont.truetype(path, size * SCALE)
-        except Exception:
+            return ImageFont.load_default(size=size * SCALE)
+        except TypeError:
             return ImageFont.load_default()
 
-    F10 = load_font(14)
-    F11 = load_font(15)
-    F12 = load_font(16)
+    F10 = load_font(13)
+    F11 = load_font(14)
+    F12 = load_font(15)
     F14 = load_font(17, bold=True)
-    F20 = load_font(23, bold=True)
+    F20 = load_font(24, bold=True)
 
     half_types = (len(type_counts) + 1) // 2
     SECTION_HEIGHTS = {
-        "header": 50 * SCALE,
-        "stat_row": 64 * SCALE,
+        "header": 54 * SCALE,
+        "stat_row": 70 * SCALE,
         "disk_bar": 58 * SCALE,
-        "types": (36 + 18 * (half_types + 1)) * SCALE,
-        "top5": ((30 + 17 * len(top5)) * SCALE if top5 else 0),
-        "dates": 60 * SCALE,
-        "meta": (28 + 17 * len([p for p, s in meta_info if s is not None])) * SCALE,
-        "backups": 62 * SCALE,
+        "types": (36 + 20 * (half_types + 1)) * SCALE,
+        "top5": ((30 + 19 * len(top5)) * SCALE if top5 else 0),
+        "dates": 64 * SCALE,
+        "meta": (28 + 19 * len([p for p, s in meta_info if s is not None])) * SCALE,
+        "backups": 80 * SCALE,
         "footer": 28 * SCALE,
     }
     active = {k: v for k, v in SECTION_HEIGHTS.items() if v > 0}
@@ -2322,7 +2331,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     half = len(type_order) // 2 + len(type_order) % 2
     for idx2, (t, cnt) in enumerate(type_order):
         col_x = PAD + u(12) if idx2 < half else W // 2 + u(10)
-        row_y = ry + (idx2 % half) * u(18)
+        row_y = ry + (idx2 % half) * u(20)
         dc = DOT_COLORS[idx2 % len(DOT_COLORS)]
         draw.ellipse([col_x, row_y + u(4), col_x + u(7), row_y + u(11)], fill=dc)
         draw.text((col_x + u(14), row_y), t.capitalize(), font=F11, fill=TEXT2)
@@ -2336,7 +2345,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         label(PAD + u(12), cy + u(9), "top 5 largest files")
         max_sz = top5[0]["file_size"] or 1
         for idx2, item in enumerate(top5):
-            fy = cy + u(26) + idx2 * u(17)
+            fy = cy + u(26) + idx2 * u(19)
             fname = item.get("filename", "?")
             fname = fname if len(fname) <= 42 else fname[:41] + "\u2026"
             sz_str = _fmt_bytes(item.get("file_size", 0))
@@ -2374,7 +2383,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         draw.text((PAD + u(12), my), p.name, font=F11, fill=name_color)
         draw.text((W - PAD - u(12) - int(draw.textlength(sz_str, font=F11)), my), sz_str,
                   font=F11, fill=ACCENT if is_live else TEXT3)
-        my += u(17)
+        my += u(19)
     cy += sh + GAP
 
     # Backup health
@@ -2387,15 +2396,15 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         bx2 = PAD + u(12) + i * (pill_w + GAP)
         bc = GREEN if bstatus == "ok" else (RED if bstatus == "corrupt" else TEXT3)
         bg2 = (20, 30, 20) if bstatus == "ok" else (30, 20, 20)
-        rrect(bx2, cy + u(24), bx2 + pill_w, cy + u(40), r=u(6), fill=bg2)
+        rrect(bx2, cy + u(34), bx2 + pill_w, cy + u(54), r=u(6), fill=bg2)
         dot_x = bx2 + pill_w // 2 - u(4)
-        draw.ellipse([dot_x, cy + u(30), dot_x + u(8), cy + u(38)], fill=bc)
-        draw.text((bx2 + pill_w // 2 - u(5), cy + u(13)), f"B.{i + 1}", font=F10, fill=TEXT3)
+        draw.ellipse([dot_x, cy + u(40), dot_x + u(8), cy + u(48)], fill=bc)
+        draw.text((bx2 + pill_w // 2 - u(5), cy + u(22)), f"B.{i + 1}", font=F10, fill=TEXT3)
     issues = [f"backup.{i + 1} {backup_health[i]}" for i in range(BACKUP_COUNT) if backup_health[i] != "ok"]
     summary = f"{ok_count} / {BACKUP_COUNT} healthy"
     if issues:
         summary += "  �  " + ",  ".join(issues)
-    draw.text((PAD + u(12), cy + u(44)), summary, font=F10, fill=TEXT3)
+    draw.text((PAD + u(12), cy + u(58)), summary, font=F10, fill=TEXT3)
     cy += sh + GAP
 
     # Footer
