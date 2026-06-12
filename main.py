@@ -473,6 +473,7 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
          InlineKeyboardButton("📊 Stats",      callback_data="action:stats")],
         [InlineKeyboardButton("📋 Recent",     callback_data="action:recent"),
          InlineKeyboardButton("⭐ Favourites", callback_data="action:favourites")],
+        [InlineKeyboardButton("💾 Disk Report", callback_data="action:disk")],
     ])
 
 
@@ -575,6 +576,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/joinme — get archive group invite &amp; become admin\n"
         "/backup — download metadata.json (your archive index)\n"
         "/restore — reply to a .json file to restore the database\n"
+        "/disk — real-time disk &amp; archive PNG report\n"
         "/help — this message\n\n"
         "<b>Modes:</b>\n"
         "📥 <b>Store</b> — navigate/create folders, then send files.\n"
@@ -1198,6 +1200,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"⭐ <b>Favourites</b> — {len(favs)} file{'s' if len(favs)!=1 else ''}:\n\nTap a file for options:",
             parse_mode="HTML", reply_markup=kb,
         )
+        return ConversationHandler.END
+
+    # ── disk report (inline) ────────────────────────────────────────
+    if data == "action:disk":
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await _send_disk_report(query.message, context)
         return ConversationHandler.END
 
     # ── search trigger ────────────────────────────────────────────────────────
@@ -1873,25 +1884,32 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await message.reply_text(f"⚠️ Failed to store file: {e}\n\nTry again or /cancel to abort.")
         return WAIT_STORE_FILE
 
+    file_size: int | None = None
     if message.document:
         file_type, filename = "document", resolve_filename(message, f"file_{copied.message_id}")
+        file_size = message.document.file_size
     elif message.photo:
         file_type, filename = "photo",    resolve_filename(message, f"photo_{copied.message_id}.jpg")
+        file_size = message.photo[-1].file_size if message.photo else None
     elif message.video:
         file_type, filename = "video",    resolve_filename(message, f"video_{copied.message_id}.mp4")
+        file_size = message.video.file_size
     elif message.audio:
         file_type, filename = "audio",    resolve_filename(message, f"audio_{copied.message_id}")
+        file_size = message.audio.file_size
     elif message.voice:
         file_type, filename = "voice",    resolve_filename(message, f"voice_{copied.message_id}.ogg")
+        file_size = message.voice.file_size
     elif message.sticker:
         file_type = "sticker"
         emoji     = message.sticker.emoji or ""
         filename  = resolve_filename(message, f"sticker_{copied.message_id}{emoji}")
+        file_size = message.sticker.file_size
     else:
         return WAIT_STORE_FILE
 
     db = load_db()
-    db[str(copied.message_id)] = {
+    record: dict = {
         "filename":   filename,
         "folder":     folder_path,
         "message_id": copied.message_id,
@@ -1899,6 +1917,9 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         "stored_at":  _now_iso(),
         "favourite":  False,
     }
+    if file_size is not None:
+        record["file_size"] = file_size
+    db[str(copied.message_id)] = record
     save_db(db)
 
     state["store_count"] = state.get("store_count", 0) + 1
@@ -2009,98 +2030,387 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ---------------------------------------------------------------------------
-# /disk  — real-time volume usage breakdown
+# Helpers shared by disk_command
+# ---------------------------------------------------------------------------
+
+def _fmt_bytes(n) -> str:
+    """Human-readable bytes string."""
+    if n is None:
+        return "unknown"
+    if n >= 1024 ** 3:
+        return f"{n / 1024 ** 3:.2f} GB"
+    if n >= 1024 ** 2:
+        return f"{n / 1024 ** 2:.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
+def _fmt_uptime(seconds: int) -> str:
+    d, r = divmod(seconds, 86400)
+    h, r = divmod(r, 3600)
+    m    = r // 60
+    if d:
+        return f"{d}d {h}h {m}m"
+    if h:
+        return f"{h}h {m}m"
+    return f"{m}m"
+
+
+def _fmt_ago(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s ago"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+# ---------------------------------------------------------------------------
+# /disk  — PNG archive & disk report
 # ---------------------------------------------------------------------------
 
 async def disk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return await deny(update)
+    await _send_disk_report(update.message, context)
 
-    import subprocess, shutil
 
-    lines: list[str] = []
-
-    # ── 1. Which directory is the volume? ────────────────────────────────────────────
-    vol_dir = str(_DB_DIR.resolve())
-    lines.append(f"📂 <b>Volume path:</b> <code>{vol_dir}</code>")
-
-    # ── 2. Disk free / total for that mount ───────────────────────────────────
+async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import shutil, time, io
     try:
-        total, used, free = shutil.disk_usage(vol_dir)
-        def _fmt(n: int) -> str:
-            if n >= 1024**3: return f"{n/1024**3:.2f} GB"
-            if n >= 1024**2: return f"{n/1024**2:.1f} MB"
-            if n >= 1024:    return f"{n/1024:.1f} KB"
-            return f"{n} B"
-        pct = used * 100 // total
-        lines.append(
-            f"💾 <b>Disk (mount):</b> {_fmt(used)} used / {_fmt(total)} total "
-            f"({pct}% full, {_fmt(free)} free)"
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        await message.reply_text(
+            "\u26a0\ufe0f Pillow is not installed. Add <code>Pillow</code> to requirements.txt.",
+            parse_mode="HTML",
         )
-    except Exception as e:
-        lines.append(f"💾 Disk info unavailable: {e}")
+        return
 
-    # ── 3. Per-file sizes for every metadata file ────────────────────────────
-    lines.append("\n📄 <b>Metadata files:</b>")
-    meta_files = [DB_FILE, DB_TMP_FILE] + [_backup_path(i) for i in range(1, BACKUP_COUNT + 1)]
-    any_meta = False
-    for p in meta_files:
-        if p.exists():
-            sz = p.stat().st_size
-            lines.append(f"  <code>{p.name:<30}</code>  {sz:>8,} B  ({sz/1024:.1f} KB)")
-            any_meta = True
-    if not any_meta:
-        lines.append("  (none found)")
+    status = await message.reply_text("\u23f3 Generating disk report\u2026")
 
-    # ── 4. Top space consumers under the volume dir (du -sh *) ───────────────────
-    lines.append(f"\n🔍 <b>Top items in <code>{vol_dir}</code>:</b>")
-    try:
-        children = sorted(Path(vol_dir).iterdir())
-        if not children:
-            lines.append("  (directory is empty)")
-        else:
-            result = subprocess.run(
-                ["du", "-sh", "--apparent-size"] + [str(p) for p in children],
-                capture_output=True, text=True, timeout=15,
-            )
-            du_lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+    bot = context.bot
+    db  = load_db()
 
-            def _du_bytes(line: str) -> float:
-                s = line.split(None, 1)[0].upper() if line else "0"
+    # 1. Fetch missing file sizes by forwarding archive messages
+    missing = [k for k, v in db.items() if "file_size" not in v]
+    newly_fetched = 0
+    if missing:
+        for key in missing:
+            item = db[key]
+            try:
+                msg_id = int(item["message_id"])
+                tg_msg = await bot.forward_message(
+                    chat_id=OWNER_ID,
+                    from_chat_id=ARCHIVE_CHAT_ID,
+                    message_id=msg_id,
+                    disable_notification=True,
+                )
+                fsize = None
+                for attr in ("document", "video", "audio", "voice", "sticker"):
+                    obj = getattr(tg_msg, attr, None)
+                    if obj and getattr(obj, "file_size", None):
+                        fsize = obj.file_size
+                        break
+                if fsize is None and tg_msg.photo:
+                    fsize = tg_msg.photo[-1].file_size
                 try:
-                    if s.endswith("G"): return float(s[:-1]) * 1024**3
-                    if s.endswith("M"): return float(s[:-1]) * 1024**2
-                    if s.endswith("K"): return float(s[:-1]) * 1024
-                    return float(s)
-                except ValueError:
-                    return 0.0
+                    await bot.delete_message(chat_id=OWNER_ID, message_id=tg_msg.message_id)
+                except Exception:
+                    pass
+                if fsize is not None:
+                    item["file_size"] = fsize
+                    newly_fetched += 1
+            except Exception:
+                pass
+        if newly_fetched:
+            save_db(db)
 
-            du_lines.sort(key=_du_bytes, reverse=True)
-            for dl in du_lines[:20]:
-                size, _, path_s = dl.partition("\t")
-                name = Path(path_s).name if path_s else dl
-                lines.append(f"  <code>{size:>8}  {name}</code>")
-    except FileNotFoundError:
-        lines.append("  <i>du not available on this system</i>")
-    except subprocess.TimeoutExpired:
-        lines.append("  <i>du timed out</i>")
-    except Exception as e:
-        lines.append(f"  <i>Error: {_esc(str(e))}</i>")
+    # 2. Collect stats
+    import os as _os
 
-    # ── 5. DB_PATH env var check ───────────────────────────────────────────────────
-    db_path_env = os.environ.get("DB_PATH")
-    if db_path_env:
-        lines.append(f"\n⚙️ <b>DB_PATH:</b> <code>{db_path_env}</code> ✔️")
-    else:
-        lines.append(
-            "\n⚙️ <b>DB_PATH env var: NOT SET</b> ⚠️\n"
-            "  Using default <code>metadata.json</code> in the app directory.\n"
-            "  Your metadata is <b>not on the volume</b> and will be lost on redeploy.\n"
-            "  Fix: set <code>DB_PATH=/data/metadata.json</code> in Railway variables."
+    vol_dir = str(_DB_DIR.resolve())
+    try:
+        total_disk, used_disk, free_disk = shutil.disk_usage(vol_dir)
+    except Exception:
+        total_disk = used_disk = free_disk = 0
+
+    try:
+        with open("/proc/uptime") as f:
+            proc_uptime_s = float(f.read().split()[0])
+        uptime_str = _fmt_uptime(int(proc_uptime_s))
+    except Exception:
+        uptime_str = "n/a"
+
+    try:
+        import psutil
+        ram_bytes = psutil.Process().memory_info().rss
+        ram_str   = _fmt_bytes(ram_bytes)
+    except Exception:
+        ram_str = "n/a"
+
+    all_sizes   = [v.get("file_size") for v in db.values()]
+    known_sizes = [s for s in all_sizes if s is not None]
+    unknown_cnt = len(all_sizes) - len(known_sizes)
+    total_tg    = sum(known_sizes)
+
+    type_counts: dict[str, int] = {}
+    for v in db.values():
+        t = v.get("type", "document")
+        type_counts[t] = type_counts.get(t, 0) + 1
+
+    top5 = sorted(
+        [v for v in db.values() if v.get("file_size")],
+        key=lambda x: x["file_size"],
+        reverse=True,
+    )[:5]
+
+    dated  = [v for v in db.values() if v.get("stored_at")]
+    oldest = min(dated, key=lambda x: x["stored_at"], default=None)
+    newest = max(dated, key=lambda x: x["stored_at"], default=None)
+
+    meta_files = [DB_FILE, DB_TMP_FILE] + [_backup_path(i) for i in range(1, BACKUP_COUNT + 1)]
+    meta_info  = [(p, p.stat().st_size if p.exists() else None) for p in meta_files]
+    last_save  = DB_FILE.stat().st_mtime if DB_FILE.exists() else None
+    last_save_str = _fmt_ago(int(time.time() - last_save)) if last_save else "n/a"
+
+    backup_health = []
+    for i in range(1, BACKUP_COUNT + 1):
+        bp = _backup_path(i)
+        if not bp.exists():
+            backup_health.append("missing")
+        elif _try_parse(bp) is None:
+            backup_health.append("corrupt")
+        else:
+            backup_health.append("ok")
+
+    db_path_env = _os.environ.get("DB_PATH")
+
+    # 3. Draw the PNG
+    W       = 520
+    BG      = (15, 17, 23)
+    CARD    = (22, 27, 38)
+    ACCENT  = (99, 102, 241)
+    TEAL    = (34, 211, 238)
+    AMBER   = (251, 191, 36)
+    GREEN   = (34, 197, 94)
+    RED     = (239, 68, 68)
+    TEXT1   = (226, 232, 240)
+    TEXT2   = (148, 163, 184)
+    TEXT3   = (75, 85, 99)
+    DIVIDER = (31, 35, 51)
+    PAD     = 20
+    GAP     = 10
+    R       = 8
+
+    def load_font(size: int, bold: bool = False):
+        try:
+            path = "/usr/share/fonts/truetype/dejavu/DejaVuSans{}.ttf".format("-Bold" if bold else "")
+            return ImageFont.truetype(path, size)
+        except Exception:
+            return ImageFont.load_default()
+
+    F10 = load_font(11)
+    F11 = load_font(12)
+    F12 = load_font(13)
+    F14 = load_font(14, bold=True)
+    F20 = load_font(20, bold=True)
+
+    SECTION_HEIGHTS = {
+        "header":  56,
+        "stat_row": 72,
+        "disk_bar": 54,
+        "types":   max(60, 32 + 20 * len(type_counts)),
+        "top5":    (max(50, 30 + 18 * len(top5)) if top5 else 0),
+        "dates":   62,
+        "meta":    30 + 18 * len([p for p, s in meta_info if s is not None]),
+        "backups": 52,
+        "footer":  34,
+    }
+    active = {k: v for k, v in SECTION_HEIGHTS.items() if v > 0}
+    H = PAD + sum(active.values()) + GAP * (len(active) - 1) + PAD
+
+    img  = Image.new("RGB", (W, H), BG)
+    draw = ImageDraw.Draw(img)
+
+    def rrect(x1, y1, x2, y2, r=R, fill=CARD):
+        draw.rounded_rectangle([x1, y1, x2, y2], radius=r, fill=fill)
+
+    def label(x, y, text, color=TEXT3, font=F10):
+        draw.text((x, y), text.upper(), font=font, fill=color)
+
+    cy = PAD
+
+    # Header
+    sh = active["header"]
+    rrect(PAD, cy, W - PAD, cy + sh)
+    draw.text((PAD + 14, cy + 10), "Disk Report", font=F20, fill=TEXT1)
+    draw.text((PAD + 14, cy + 34), vol_dir, font=F10, fill=TEXT3)
+    pill_text = f"up {uptime_str}"
+    pw = int(draw.textlength(pill_text, font=F11)) + 16
+    rrect(W - PAD - pw - 4, cy + 12, W - PAD - 4, cy + 32, r=10, fill=(30, 27, 60))
+    draw.text((W - PAD - pw + 4, cy + 16), pill_text, font=F11, fill=(167, 139, 250))
+    cy += sh + GAP
+
+    # 3 stat cards
+    sh  = active["stat_row"]
+    cw  = (W - PAD * 2 - GAP * 2) // 3
+    tg_label = _fmt_bytes(total_tg) + (f" +{unknown_cnt} unk." if unknown_cnt else "")
+    stats = [
+        ("Volume used",  _fmt_bytes(used_disk),  f"of {_fmt_bytes(total_disk)}"),
+        ("TG file size", tg_label,                f"{len(db)} files"),
+        ("RAM usage",    ram_str,                 "bot process"),
+    ]
+    for i, (lbl, val, sub) in enumerate(stats):
+        x = PAD + i * (cw + GAP)
+        rrect(x, cy, x + cw, cy + sh)
+        label(x + 10, cy + 9, lbl)
+        draw.text((x + 10, cy + 24), val, font=F14, fill=TEXT1)
+        draw.text((x + 10, cy + 46), sub, font=F10, fill=TEXT3)
+    cy += sh + GAP
+
+    # Disk bar
+    sh = active["disk_bar"]
+    rrect(PAD, cy, W - PAD, cy + sh)
+    pct = (used_disk / total_disk * 100) if total_disk else 0
+    bar_color = GREEN if pct < 70 else (AMBER if pct < 90 else RED)
+    label(PAD + 12, cy + 9, f"disk usage  \u2014  {pct:.0f}% full  �  {_fmt_bytes(free_disk)} free")
+    bx, by = PAD + 12, cy + 26
+    bw, bh = W - PAD * 2 - 24, 8
+    rrect(bx, by, bx + bw, by + bh, r=4, fill=DIVIDER)
+    fill_w = max(4, int(bw * pct / 100))
+    rrect(bx, by, bx + fill_w, by + bh, r=4, fill=bar_color)
+    draw.text((bx, by + 14), "0", font=F10, fill=TEXT3)
+    draw.text((bx + bw // 2 - 10, by + 14), _fmt_bytes(total_disk // 2), font=F10, fill=TEXT3)
+    draw.text((bx + bw - 32, by + 14), _fmt_bytes(total_disk), font=F10, fill=TEXT3)
+    cy += sh + GAP
+
+    # Type breakdown
+    sh = active["types"]
+    rrect(PAD, cy, W - PAD, cy + sh)
+    label(PAD + 12, cy + 9, f"file type breakdown  �  {len(db)} total")
+    DOT_COLORS = [ACCENT, TEAL, AMBER, GREEN, (236, 72, 153), (251, 146, 60)]
+    type_order = sorted(type_counts.items(), key=lambda x: -x[1])
+    total_files = len(db) or 1
+    seg_x = PAD + 12
+    bar_w = W - PAD * 2 - 24
+    for idx2, (t, cnt) in enumerate(type_order):
+        seg_w = max(2, int(bar_w * cnt / total_files))
+        rrect(seg_x, cy + 24, seg_x + seg_w, cy + 30, r=3, fill=DOT_COLORS[idx2 % len(DOT_COLORS)])
+        seg_x += seg_w
+    ry   = cy + 38
+    half = len(type_order) // 2 + len(type_order) % 2
+    for idx2, (t, cnt) in enumerate(type_order):
+        col_x = PAD + 12 if idx2 < half else W // 2 + 10
+        row_y = ry + (idx2 % half) * 18
+        dc    = DOT_COLORS[idx2 % len(DOT_COLORS)]
+        draw.ellipse([col_x, row_y + 4, col_x + 7, row_y + 11], fill=dc)
+        draw.text((col_x + 14, row_y), t.capitalize(), font=F11, fill=TEXT2)
+        draw.text((col_x + 14 + 80, row_y), str(cnt), font=F11, fill=TEXT1)
+    cy += sh + GAP
+
+    # Top 5 largest
+    if top5:
+        sh = active["top5"]
+        rrect(PAD, cy, W - PAD, cy + sh)
+        label(PAD + 12, cy + 9, "top 5 largest files")
+        max_sz = top5[0]["file_size"] or 1
+        for idx2, item in enumerate(top5):
+            fy    = cy + 26 + idx2 * 17
+            fname = item.get("filename", "?")
+            fname = fname if len(fname) <= 42 else fname[:41] + "\u2026"
+            sz_str = _fmt_bytes(item.get("file_size", 0))
+            draw.text((PAD + 12, fy), fname, font=F10, fill=TEXT2)
+            draw.text((W - PAD - 12 - int(draw.textlength(sz_str, font=F10)), fy), sz_str, font=F10, fill=ACCENT)
+        cy += sh + GAP
+
+    # Oldest / newest
+    sh = active["dates"]
+    rrect(PAD, cy, W - PAD, cy + sh)
+    half_w = (W - PAD * 2 - GAP) // 2
+    for side, item in enumerate([oldest, newest]):
+        lbl_text = "oldest file" if side == 0 else "newest file"
+        x = PAD if side == 0 else PAD + half_w + GAP
+        label(x + 10, cy + 9, lbl_text)
+        if item:
+            draw.text((x + 10, cy + 24), item.get("stored_at", "")[:10], font=F12, fill=TEXT1)
+            fn = item.get("filename", "?")
+            fn = fn if len(fn) <= 28 else fn[:27] + "\u2026"
+            draw.text((x + 10, cy + 42), fn, font=F10, fill=TEXT3)
+        else:
+            draw.text((x + 10, cy + 24), "n/a", font=F12, fill=TEXT3)
+    cy += sh + GAP
+
+    # Metadata files
+    visible_meta = [(p, s) for p, s in meta_info if s is not None]
+    sh = active["meta"]
+    rrect(PAD, cy, W - PAD, cy + sh)
+    label(PAD + 12, cy + 9, f"metadata files  �  last save {last_save_str}")
+    my = cy + 26
+    for p, s in visible_meta:
+        is_live    = (p == DB_FILE)
+        name_color = TEXT1 if is_live else TEXT3
+        sz_str     = _fmt_bytes(s)
+        draw.text((PAD + 12, my), p.name, font=F11, fill=name_color)
+        draw.text((W - PAD - 12 - int(draw.textlength(sz_str, font=F11)), my), sz_str,
+                  font=F11, fill=ACCENT if is_live else TEXT3)
+        my += 17
+    cy += sh + GAP
+
+    # Backup health
+    sh = active["backups"]
+    rrect(PAD, cy, W - PAD, cy + sh)
+    label(PAD + 12, cy + 9, "backup health")
+    ok_count = backup_health.count("ok")
+    pill_w   = (W - PAD * 2 - 24 - GAP * (BACKUP_COUNT - 1)) // BACKUP_COUNT
+    for i, bstatus in enumerate(backup_health):
+        bx2 = PAD + 12 + i * (pill_w + GAP)
+        bc  = GREEN if bstatus == "ok" else (RED if bstatus == "corrupt" else TEXT3)
+        bg2 = (20, 30, 20) if bstatus == "ok" else (30, 20, 20)
+        rrect(bx2, cy + 24, bx2 + pill_w, cy + 40, r=6, fill=bg2)
+        dot_x = bx2 + pill_w // 2 - 4
+        draw.ellipse([dot_x, cy + 30, dot_x + 8, cy + 38], fill=bc)
+        draw.text((bx2 + pill_w // 2 - 5, cy + 13), f"B.{i+1}", font=F10, fill=TEXT3)
+    issues  = [f"backup.{i+1} {backup_health[i]}" for i in range(BACKUP_COUNT) if backup_health[i] != "ok"]
+    summary = f"{ok_count} / {BACKUP_COUNT} healthy"
+    if issues:
+        summary += "  �  " + ",  ".join(issues)
+    draw.text((PAD + 12, cy + 44), summary, font=F10, fill=TEXT3)
+    cy += sh + GAP
+
+    # Footer
+    sh = active["footer"]
+    db_ok   = db_path_env is not None
+    db_text = f"DB_PATH  {db_path_env}  \u2714" if db_ok else "DB_PATH not set  \u26a0  metadata may not be on volume"
+    draw.text((PAD + 4, cy + 10), db_text, font=F10, fill=GREEN if db_ok else RED)
+    ts = _now_iso()[:19].replace("T", "  ")
+    draw.text((W - PAD - int(draw.textlength(ts, font=F10)) - 4, cy + 10), ts, font=F10, fill=TEXT3)
+
+    # Send
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    buf.seek(0)
+
+    caption_parts = [f"<b>Disk Report</b>  \u2014  {_now_iso()[:16].replace('T', ' ')} IST"]
+    if newly_fetched:
+        caption_parts.append(f"<i>Cached sizes for {newly_fetched} file(s) this run.</i>")
+    if unknown_cnt:
+        caption_parts.append(
+            f"<i>{unknown_cnt} file(s) have no cached size. "
+            f"For files &gt;20\u202fMB edit metadata.json manually.</i>"
         )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+    try:
+        await status.delete()
+    except Exception:
+        pass
 
+    await message.reply_photo(
+        photo=buf,
+        caption="\n".join(caption_parts),
+        parse_mode="HTML",
+    )
 
 # ---------------------------------------------------------------------------
 # /joinme + archive group protection
