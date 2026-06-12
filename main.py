@@ -358,7 +358,7 @@ def db_stats_full(db: dict) -> str:
     root_files = folder_file_counts.get("Root", 0)
 
     def _recurse(folder: str, depth: int) -> None:
-        indent = "  " * depth
+        indent = "     " * depth
         name = folder.rsplit("/", 1)[-1] if "/" in folder else folder
         direct_files = folder_file_counts.get(folder, 0)
         tree_files = count_all_in_tree(db, folder)
