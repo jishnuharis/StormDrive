@@ -378,11 +378,88 @@ def db_stats_full(db: dict) -> str:
     return "\n".join(lines)
 
 
+EXT_TYPE_MAP = {
+    # video
+    ".mp4": "video", ".mkv": "video", ".mov": "video", ".avi": "video",
+    ".webm": "video", ".flv": "video", ".m4v": "video", ".3gp": "video",
+    ".ts": "video", ".mts": "video", ".m2ts": "video", ".vob": "video",
+    ".wmv": "video", ".rm": "video", ".rmvb": "video", ".divx": "video",
+    # audio
+    ".mp3": "audio", ".m4a": "audio", ".flac": "audio", ".wav": "audio",
+    ".ogg": "audio", ".opus": "audio", ".aac": "audio", ".wma": "audio",
+    ".aiff": "audio", ".alac": "audio", ".mid": "audio", ".midi": "audio",
+    ".amr": "audio", ".ape": "audio",
+    # images
+    ".jpg": "image", ".jpeg": "image", ".png": "image", ".gif": "image",
+    ".webp": "image", ".bmp": "image", ".heic": "image", ".heif": "image",
+    ".tiff": "image", ".tif": "image", ".svg": "image", ".ico": "image",
+    ".raw": "image", ".cr2": "image", ".nef": "image", ".arw": "image",
+    ".avif": "image",
+    # documents
+    ".pdf": "document", ".doc": "document", ".docx": "document",
+    ".xls": "document", ".xlsx": "document", ".ppt": "document",
+    ".pptx": "document", ".txt": "document", ".csv": "document",
+    ".odt": "document", ".ods": "document", ".odp": "document",
+    ".rtf": "document", ".md": "document", ".epub": "document",
+    ".pages": "document", ".numbers": "document", ".key": "document",
+    # archives
+    ".zip": "archive", ".rar": "archive", ".7z": "archive",
+    ".tar": "archive", ".gz": "archive", ".bz2": "archive",
+    ".xz": "archive", ".zst": "archive", ".iso": "archive",
+    ".tgz": "archive", ".tbz2": "archive",
+    # apps / executables
+    ".apk": "app", ".aab": "app", ".ipa": "app",
+    ".exe": "app", ".msi": "app", ".dmg": "app", ".pkg": "app",
+    ".deb": "app", ".rpm": "app", ".appimage": "app",
+    # code / data
+    ".json": "code", ".xml": "code", ".yaml": "code", ".yml": "code",
+    ".html": "code", ".htm": "code", ".css": "code", ".js": "code",
+    ".py": "code", ".java": "code", ".kt": "code", ".swift": "code",
+    ".c": "code", ".cpp": "code", ".h": "code",
+    ".sql": "code", ".sh": "code", ".bat": "code",
+    # fonts
+    ".ttf": "font", ".otf": "font", ".woff": "font", ".woff2": "font",
+}
+
+TYPE_EMOJI = {
+    "video":    "🎬",
+    "audio":    "🎵",
+    "image":    "🖼️",
+    "document": "📄",
+    "archive":  "🗂️",
+    "app":      "⚙️",
+    "code":     "🧩",
+    "font":     "🔤",
+    "photo":    "🖼️",
+    "voice":    "🎙",
+    "sticker":  "🎴",
+    "other":    "❓",
+}
+
+
+def classify_by_extension(filename: str) -> str:
+    ext = Path(filename).suffix.lower()
+    return EXT_TYPE_MAP.get(ext, "other")
+
+
+def effective_type(item: dict) -> str:
+    """
+    Returns the best available type for a DB record.
+    For non-document Telegram types (video/audio/photo/voice/sticker),
+    trust Telegram directly. For 'document', refine using the filename extension.
+    """
+    stored = item.get("type", "document")
+    if stored != "document":
+        return stored
+    filename = item.get("filename", "")
+    ext_type = classify_by_extension(filename)
+    if ext_type != "other":
+        return ext_type
+    return stored  # stay as "document" if extension gives nothing
+
+
 def file_type_emoji(file_type: str) -> str:
-    return {
-        "document": "📄", "photo": "🖼", "video": "🎬",
-        "audio": "🎵", "voice": "🎙", "sticker": "🎴",
-    }.get(file_type, "📄")
+    return TYPE_EMOJI.get(file_type, "📄")
 
 
 def _esc(text: str) -> str:
@@ -497,6 +574,7 @@ async def set_commands(app: Application) -> None:
         BotCommand("backup", "Download metadata.json as a file"),
         BotCommand("restore", "Reply to a .json file to restore the database"),
         BotCommand("disk", "Show real-time volume disk usage"),
+        BotCommand("reclassify", "Re-detect file types using magic bytes"),
     ])
 
 
@@ -2045,6 +2123,193 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ---------------------------------------------------------------------------
+# MIME type → our type vocabulary
+# ---------------------------------------------------------------------------
+
+_MIME_TO_TYPE: dict[str, str] = {
+    # video
+    "video/mp4": "video", "video/x-matroska": "video", "video/quicktime": "video",
+    "video/x-msvideo": "video", "video/webm": "video", "video/x-flv": "video",
+    "video/3gpp": "video", "video/mpeg": "video", "video/x-ms-wmv": "video",
+    # audio
+    "audio/mpeg": "audio", "audio/mp4": "audio", "audio/flac": "audio",
+    "audio/x-wav": "audio", "audio/wav": "audio", "audio/ogg": "audio",
+    "audio/opus": "audio", "audio/aac": "audio", "audio/x-ms-wma": "audio",
+    "audio/x-aiff": "audio", "audio/x-ape": "audio", "audio/midi": "audio",
+    # images
+    "image/jpeg": "image", "image/png": "image", "image/gif": "image",
+    "image/webp": "image", "image/bmp": "image", "image/heic": "image",
+    "image/heif": "image", "image/tiff": "image", "image/svg+xml": "image",
+    "image/x-icon": "image", "image/avif": "image",
+    # documents
+    "application/pdf": "document",
+    "application/msword": "document",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
+    "application/vnd.ms-excel": "document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "document",
+    "application/vnd.ms-powerpoint": "document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "document",
+    "text/plain": "document", "text/csv": "document",
+    "application/epub+zip": "document",
+    "application/vnd.oasis.opendocument.text": "document",
+    "application/vnd.oasis.opendocument.spreadsheet": "document",
+    "application/vnd.oasis.opendocument.presentation": "document",
+    # archives
+    "application/zip": "archive", "application/x-rar-compressed": "archive",
+    "application/x-7z-compressed": "archive", "application/x-tar": "archive",
+    "application/gzip": "archive", "application/x-bzip2": "archive",
+    "application/x-xz": "archive", "application/x-iso9660-image": "archive",
+    "application/x-zstd": "archive",
+    # apps
+    "application/vnd.android.package-archive": "app",
+    "application/x-apple-diskimage": "app",
+    "application/x-msdownload": "app", "application/x-msi": "app",
+    "application/x-debian-package": "app", "application/x-rpm": "app",
+    "application/x-executable": "app", "application/x-elf": "app",
+    # code / data
+    "application/json": "code", "application/xml": "code",
+    "text/xml": "code", "text/html": "code", "text/css": "code",
+    "text/javascript": "code", "application/javascript": "code",
+    "application/x-python-code": "code", "text/x-python": "code",
+    "application/x-sh": "code", "text/x-shellscript": "code",
+    "application/x-sqlite3": "code",
+    # fonts
+    "font/ttf": "font", "font/otf": "font", "font/woff": "font",
+    "font/woff2": "font", "application/font-woff": "font",
+}
+
+
+def _mime_to_type(mime: str) -> str | None:
+    """Map a MIME string to our type vocabulary. Returns None if unrecognised."""
+    mime = mime.lower().split(";")[0].strip()
+    if mime in _MIME_TO_TYPE:
+        return _MIME_TO_TYPE[mime]
+    # broad fallbacks
+    if mime.startswith("video/"):
+        return "video"
+    if mime.startswith("audio/"):
+        return "audio"
+    if mime.startswith("image/"):
+        return "image"
+    if mime.startswith("text/"):
+        return "document"
+    if mime.startswith("font/"):
+        return "font"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# /reclassify — magic-byte reclassification of document-typed files
+# ---------------------------------------------------------------------------
+
+async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return await deny(update)
+
+    try:
+        import magic as _magic
+    except ImportError:
+        await update.message.reply_text(
+            "⚠️ <code>python-magic</code> is not installed.\n"
+            "Add <code>python-magic</code> to <code>requirements.txt</code> and redeploy.",
+            parse_mode="HTML",
+        )
+        return
+
+    db = load_db()
+    targets = [(k, v) for k, v in db.items() if v.get("type") == "document"]
+    total = len(targets)
+
+    if total == 0:
+        await update.message.reply_text("✅ No <code>document</code>-typed files to reclassify.", parse_mode="HTML")
+        return
+
+    def _progress_bar(done: int, total: int, width: int = 20) -> str:
+        filled = int(width * done / total)
+        bar = "█" * filled + "░" * (width - filled)
+        return f"[{bar}] {done}/{total}"
+
+    status_msg = await update.message.reply_text(
+        f"🔄 <b>Reclassifying files…</b>\n\n"
+        f"Progress: {_progress_bar(0, total)}",
+        parse_mode="HTML",
+    )
+
+    import time as _time
+    bot = context.bot
+    updated = 0
+    failed = 0
+    last_edit = _time.time()
+
+    for i, (key, item) in enumerate(targets, 1):
+        try:
+            tg_file = await bot.get_file(
+                await _resolve_file_id(bot, item)
+            )
+            file_bytes = await tg_file.download_as_bytearray()
+            mime = _magic.from_buffer(bytes(file_bytes[:1024]), mime=True)
+            detected = _mime_to_type(mime)
+            if detected and detected != "document":
+                item["type"] = detected
+                updated += 1
+        except Exception:
+            failed += 1
+
+        now = _time.time()
+        if now - last_edit >= 1.0:
+            try:
+                await status_msg.edit_text(
+                    f"🔄 <b>Reclassifying files…</b>\n\n"
+                    f"Progress: {_progress_bar(i, total)}",
+                    parse_mode="HTML",
+                )
+                last_edit = now
+            except Exception:
+                pass
+
+    if updated:
+        save_db(db)
+
+    await status_msg.edit_text(
+        f"✅ <b>Reclassification complete!</b>\n\n"
+        f"Processed: <b>{total}</b> files\n"
+        f"Updated: <b>{updated}</b> types changed\n"
+        f"Unchanged: <b>{total - updated - failed}</b>\n"
+        f"Failed: <b>{failed}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(
+            [[InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]]
+        ),
+    )
+
+
+async def _resolve_file_id(bot, item: dict) -> str:
+    """Forward the archived message to get a usable file_id for get_file."""
+    msg_id = int(item["message_id"])
+    fwd = await bot.forward_message(
+        chat_id=OWNER_ID,
+        from_chat_id=ARCHIVE_CHAT_ID,
+        message_id=msg_id,
+        disable_notification=True,
+    )
+    file_id = None
+    for attr in ("document", "video", "audio", "voice", "sticker"):
+        obj = getattr(fwd, attr, None)
+        if obj and getattr(obj, "file_id", None):
+            file_id = obj.file_id
+            break
+    if file_id is None and fwd.photo:
+        file_id = fwd.photo[-1].file_id
+    try:
+        await bot.delete_message(chat_id=OWNER_ID, message_id=fwd.message_id)
+    except Exception:
+        pass
+    if not file_id:
+        raise ValueError("No file_id found")
+    return file_id
+
+
+# ---------------------------------------------------------------------------
 # Helpers shared by disk_command
 # ---------------------------------------------------------------------------
 
@@ -2170,9 +2435,12 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     total_tg = sum(known_sizes)
 
     type_counts: dict[str, int] = {}
+    type_sizes: dict[str, int] = {}
     for v in db.values():
-        t = v.get("type", "document")
+        t = effective_type(v)
         type_counts[t] = type_counts.get(t, 0) + 1
+        if v.get("file_size"):
+            type_sizes[t] = type_sizes.get(t, 0) + v["file_size"]
 
     top5 = sorted(
         [v for v in db.values() if v.get("file_size")],
@@ -2321,6 +2589,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     DOT_COLORS = [ACCENT, TEAL, AMBER, GREEN, (236, 72, 153), (251, 146, 60)]
     type_order = sorted(type_counts.items(), key=lambda x: -x[1])
     total_files = len(db) or 1
+    total_known_size = sum(type_sizes.values()) or 1
     seg_x = PAD + u(12)
     bar_w = W - PAD * 2 - u(24)
     for idx2, (t, cnt) in enumerate(type_order):
@@ -2334,8 +2603,12 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         row_y = ry + (idx2 % half) * u(20)
         dc = DOT_COLORS[idx2 % len(DOT_COLORS)]
         draw.ellipse([col_x, row_y + u(4), col_x + u(7), row_y + u(11)], fill=dc)
-        draw.text((col_x + u(14), row_y), t.capitalize(), font=F11, fill=TEXT2)
-        draw.text((col_x + u(14) + u(80), row_y), str(cnt), font=F11, fill=TEXT1)
+        emoji = TYPE_EMOJI.get(t, "")
+        draw.text((col_x + u(14), row_y), f"{t.capitalize()}", font=F11, fill=TEXT2)
+        sz = type_sizes.get(t)
+        size_str = f"  {_fmt_bytes(sz)}" if sz else ""
+        pct_str = f"{cnt / total_files * 100:.0f}%"
+        draw.text((col_x + u(14) + u(72), row_y), f"{cnt} ({pct_str}){size_str}", font=F11, fill=TEXT1)
     cy += sh + GAP
 
     # Top 5 largest
@@ -2590,6 +2863,7 @@ app.add_handler(CommandHandler("joinme", joinme_command))
 app.add_handler(CommandHandler("backup", backup_command))
 app.add_handler(CommandHandler("restore", restore_command))
 app.add_handler(CommandHandler("disk", disk_command))
+app.add_handler(CommandHandler("reclassify", reclassify_command))
 app.add_handler(ChatMemberHandler(protect_archive_group, ChatMemberHandler.CHAT_MEMBER))
 
 if __name__ == "__main__":
