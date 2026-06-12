@@ -2202,7 +2202,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     db_path_env = _os.environ.get("DB_PATH")
 
     # 3. Draw the PNG
-    SCALE = 2  # render at 2x for crisp quality
+    SCALE = 1  # render at 2x for crisp quality
     W = 520 * SCALE
     BG = (15, 17, 23)
     CARD = (22, 27, 38)
