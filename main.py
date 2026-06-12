@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import time as _time_module
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -58,29 +59,30 @@ from telegram.ext import (
 # Config
 # ---------------------------------------------------------------------------
 
-BOT_TOKEN       = os.environ.get("BOT_TOKEN", "8860089092:AAFKLnebRVd_YyVWhVWfZa5mGFflFc_wvRw")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8860089092:AAFKLnebRVd_YyVWhVWfZa5mGFflFc_wvRw")
 ARCHIVE_CHAT_ID = int(os.environ.get("ARCHIVE_CHAT_ID", "-1003910547391"))
-OWNER_ID        = int(os.environ.get("OWNER_ID", "6618474423"))
+OWNER_ID = int(os.environ.get("OWNER_ID", "6618474423"))
 
-_DB_PATH     = Path(os.environ.get("DB_PATH", "metadata.json"))
-_DB_DIR      = _DB_PATH.parent
-DB_FILE      = _DB_PATH
-DB_TMP_FILE  = _DB_DIR / "metadata.tmp.json"
+_DB_PATH = Path(os.environ.get("DB_PATH", "metadata.json"))
+_DB_DIR = _DB_PATH.parent
+DB_FILE = _DB_PATH
+DB_TMP_FILE = _DB_DIR / "metadata.tmp.json"
 BACKUP_COUNT = 5
-PAGE_SIZE    = 10
-RECENT_N     = 15
-IST          = timezone(timedelta(hours=5, minutes=30))
+PAGE_SIZE = 10
+RECENT_N = 15
+IST = timezone(timedelta(hours=5, minutes=30))
+_BOT_START_TIME = _time_module.time()
 
 _DB_DIR.mkdir(parents=True, exist_ok=True)
 
 # Conversation states
-WAIT_NEW_FOLDER    = 1
-WAIT_STORE_FILE    = 2
-WAIT_RENAME_INPUT  = 3
+WAIT_NEW_FOLDER = 1
+WAIT_STORE_FILE = 2
+WAIT_RENAME_INPUT = 3
 WAIT_RENAME_FOLDER = 4
-WAIT_SEARCH_INPUT  = 5
-WAIT_MOVE_DEST     = 6   # navigating to folder-move destination
-WAIT_MOVE_FILE_DST = 7   # navigating to file-move destination
+WAIT_SEARCH_INPUT = 5
+WAIT_MOVE_DEST = 6  # navigating to folder-move destination
+WAIT_MOVE_FILE_DST = 7  # navigating to file-move destination
 
 # ---------------------------------------------------------------------------
 # In-memory user state
@@ -100,6 +102,7 @@ WAIT_MOVE_FILE_DST = 7   # navigating to file-move destination
 # }
 # ---------------------------------------------------------------------------
 user_state: dict[int, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # DB layer
@@ -268,11 +271,11 @@ def move_folder_in_db(db: dict, old_path: str, new_parent: str) -> tuple[int, st
     Move folder old_path under new_parent.
     Returns (records_updated, new_full_path).
     """
-    old_path   = normalize_path(old_path)
+    old_path = normalize_path(old_path)
     new_parent = normalize_path(new_parent)
     folder_name = old_path.rsplit("/", 1)[-1]
-    new_path    = normalize_path(f"{new_parent}/{folder_name}")
-    updated     = rename_folder_in_db(db, old_path, new_path)
+    new_path = normalize_path(f"{new_parent}/{folder_name}")
+    updated = rename_folder_in_db(db, old_path, new_path)
     return updated, new_path
 
 
@@ -334,7 +337,7 @@ def db_stats_full(db: dict) -> str:
         for i in range(len(parts)):
             all_folders.add("/".join(parts[:i + 1]))
 
-    total_files   = len(db)
+    total_files = len(db)
     total_folders = len(all_folders) - 1  # exclude Root itself
 
     # Build lines: show folders depth-first, indented
@@ -352,15 +355,15 @@ def db_stats_full(db: dict) -> str:
         f"Total: <b>{total_files}</b> files in <b>{total_folders}</b> folder(s)\n"
     ]
     root_direct = len(folder_file_counts.get("Root", 0) and [1] or [])
-    root_files  = folder_file_counts.get("Root", 0)
+    root_files = folder_file_counts.get("Root", 0)
 
     def _recurse(folder: str, depth: int) -> None:
         indent = "  " * depth
-        name   = folder.rsplit("/", 1)[-1] if "/" in folder else folder
+        name = folder.rsplit("/", 1)[-1] if "/" in folder else folder
         direct_files = folder_file_counts.get(folder, 0)
-        tree_files   = count_all_in_tree(db, folder)
-        children     = _children(folder)
-        sub_count    = len(children)
+        tree_files = count_all_in_tree(db, folder)
+        children = _children(folder)
+        sub_count = len(children)
         suffix = f" ({tree_files} total)" if tree_files != direct_files else ""
         lines.append(f"{indent}📁 <b>{name}</b>: {direct_files} file(s){suffix}")
         for child in children:
@@ -408,11 +411,11 @@ async def deny(update: Update) -> None:
 # ---------------------------------------------------------------------------
 
 async def retire_last_btn_msg(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    state: dict,
-    count: int,
-    folder_path: str,
+        context: ContextTypes.DEFAULT_TYPE,
+        chat_id: int,
+        state: dict,
+        count: int,
+        folder_path: str,
 ) -> None:
     msg_id = state.get("last_btn_msg")
     if not msg_id:
@@ -438,10 +441,10 @@ async def retire_last_btn_msg(
 # ---------------------------------------------------------------------------
 
 def build_paginated_keyboard(
-    items: list[tuple[str, str]],
-    page: int,
-    extra_top_rows: list | None = None,
-    extra_bottom_rows: list | None = None,
+        items: list[tuple[str, str]],
+        page: int,
+        extra_top_rows: list | None = None,
+        extra_bottom_rows: list | None = None,
 ) -> InlineKeyboardMarkup:
     total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
@@ -465,13 +468,13 @@ def build_paginated_keyboard(
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store",      callback_data="mode:store"),
-         InlineKeyboardButton("📤 Traverse",   callback_data="mode:retrieve")],
-        [InlineKeyboardButton("🗑 Delete",     callback_data="mode:delete"),
-         InlineKeyboardButton("✏️ Rename",     callback_data="mode:rename")],
-        [InlineKeyboardButton("🔍 Search",     callback_data="action:search"),
-         InlineKeyboardButton("📊 Stats",      callback_data="action:stats")],
-        [InlineKeyboardButton("📋 Recent",     callback_data="action:recent"),
+        [InlineKeyboardButton("📥 Store", callback_data="mode:store"),
+         InlineKeyboardButton("📤 Traverse", callback_data="mode:retrieve")],
+        [InlineKeyboardButton("🗑 Delete", callback_data="mode:delete"),
+         InlineKeyboardButton("✏️ Rename", callback_data="mode:rename")],
+        [InlineKeyboardButton("🔍 Search", callback_data="action:search"),
+         InlineKeyboardButton("📊 Stats", callback_data="action:stats")],
+        [InlineKeyboardButton("📋 Recent", callback_data="action:recent"),
          InlineKeyboardButton("⭐ Favourites", callback_data="action:favourites")],
         [InlineKeyboardButton("💾 Disk Report", callback_data="action:disk")],
     ])
@@ -483,17 +486,17 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 
 async def set_commands(app: Application) -> None:
     await app.bot.set_my_commands([
-        BotCommand("start",   "Open archive menu"),
-        BotCommand("menu",    "Return to main menu"),
-        BotCommand("cancel",  "Cancel current action"),
-        BotCommand("recent",  "Show recently stored files"),
-        BotCommand("stats",   "Show archive statistics"),
-        BotCommand("search",  "Search files by name"),
-        BotCommand("help",    "Show help & command list"),
-        BotCommand("joinme",  "Get invite link & become admin in archive group"),
-        BotCommand("backup",  "Download metadata.json as a file"),
+        BotCommand("start", "Open archive menu"),
+        BotCommand("menu", "Return to main menu"),
+        BotCommand("cancel", "Cancel current action"),
+        BotCommand("recent", "Show recently stored files"),
+        BotCommand("stats", "Show archive statistics"),
+        BotCommand("search", "Search files by name"),
+        BotCommand("help", "Show help & command list"),
+        BotCommand("joinme", "Get invite link & become admin in archive group"),
+        BotCommand("backup", "Download metadata.json as a file"),
         BotCommand("restore", "Reply to a .json file to restore the database"),
-        BotCommand("disk",    "Show real-time volume disk usage"),
+        BotCommand("disk", "Show real-time volume disk usage"),
     ])
 
 
@@ -503,18 +506,18 @@ async def set_commands(app: Application) -> None:
 
 def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
     return {
-        "mode":               mode,
-        "path":               "Root",
-        "view":               "folders",
-        "page":               0,
-        "last_btn_msg":       None,
-        "store_count":        0,
-        "rename_target":      None,
+        "mode": mode,
+        "path": "Root",
+        "view": "folders",
+        "page": 0,
+        "last_btn_msg": None,
+        "store_count": 0,
+        "rename_target": None,
         "rename_folder_path": None,
-        "move_target":        None,
-        "move_folder_path":   None,
-        "search_items":       None,
-        "sort_order":         sort_order,   # preserved on mode change
+        "move_target": None,
+        "move_folder_path": None,
+        "search_items": None,
+        "sort_order": sort_order,  # preserved on mode change
     }
 
 
@@ -530,7 +533,8 @@ def _inherit_state(user_id: int, mode: str) -> dict:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
+        await deny(update);
+        return ConversationHandler.END
     user_state.pop(update.effective_user.id, None)
     await update.message.reply_text(
         "📦 <b>Archive Bot</b>\n\nWhat would you like to do?",
@@ -542,7 +546,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
+        await deny(update);
+        return ConversationHandler.END
     user_state.pop(update.effective_user.id, None)
     await update.message.reply_text(
         "📦 <b>Archive Bot</b>\n\nWhat would you like to do?",
@@ -554,7 +559,8 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
+        await deny(update);
+        return ConversationHandler.END
     user_state.pop(update.effective_user.id, None)
     await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
@@ -623,10 +629,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
-    db    = load_db()
+        await deny(update);
+        return ConversationHandler.END
+    db = load_db()
     items = get_recent_files(db, RECENT_N)
-    uid   = update.effective_user.id
+    uid = update.effective_user.id
     state = user_state.setdefault(uid, _inherit_state(uid, "retrieve"))
     state["mode"] = "retrieve"
     if not items:
@@ -639,8 +646,8 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     kb_items = [
         (
-            f"{file_type_emoji(r.get('type','document'))} {r['filename']}  "
-            f"[{format_breadcrumb(r.get('folder','Root'))}]",
+            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}  "
+            f"[{format_breadcrumb(r.get('folder', 'Root'))}]",
             f"file_action:{r['message_id']}",
         )
         for r in items
@@ -659,7 +666,8 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
+        await deny(update);
+        return ConversationHandler.END
     uid = update.effective_user.id
     user_state[uid] = _inherit_state(uid, "retrieve")
     await update.message.reply_text(
@@ -674,15 +682,16 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
+        await deny(update);
+        return ConversationHandler.END
     uid = update.effective_user.id
-    q   = update.message.text.strip()
+    q = update.message.text.strip()
     if not q:
         await update.message.reply_text("Please type something to search for.")
         return WAIT_SEARCH_INPUT
-    db      = load_db()
+    db = load_db()
     results = search_files(db, q)
-    state   = user_state.setdefault(uid, _inherit_state(uid, "retrieve"))
+    state = user_state.setdefault(uid, _inherit_state(uid, "retrieve"))
     state["mode"] = "retrieve"
     state["view"] = "search"
     if not results:
@@ -691,14 +700,14 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔍 Search again", callback_data="action:search")],
-                [InlineKeyboardButton("🏠 Main Menu",    callback_data="action:menu")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ]),
         )
         return ConversationHandler.END
     items = [
         (
-            f"{file_type_emoji(r.get('type','document'))} {r['filename']}  "
-            f"[{format_breadcrumb(r.get('folder','Root'))}]",
+            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}  "
+            f"[{format_breadcrumb(r.get('folder', 'Root'))}]",
             f"file_action:{r['message_id']}",
         )
         for r in results
@@ -709,11 +718,11 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
         items, 0,
         extra_bottom_rows=[
             [InlineKeyboardButton("🔍 Search again", callback_data="action:search")],
-            [InlineKeyboardButton("🏠 Main Menu",    callback_data="action:menu")],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
         ],
     )
     await update.message.reply_text(
-        f"🔍 <b>{len(results)} result{'s' if len(results)!=1 else ''}</b> for <i>{_esc(q)}</i>\n\n"
+        f"🔍 <b>{len(results)} result{'s' if len(results) != 1 else ''}</b> for <i>{_esc(q)}</i>\n\n"
         "Tap a file for options:",
         parse_mode="HTML",
         reply_markup=kb,
@@ -726,17 +735,17 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
 # ---------------------------------------------------------------------------
 
 async def show_folder_list(query, user_id: int) -> None:
-    db    = load_db()
+    db = load_db()
     state = user_state.setdefault(user_id, _fresh_state())
     state["view"] = "folders"
-    mode     = state["mode"]
-    page     = state.get("page", 0)
-    path     = normalize_path(state.get("path", "Root"))
+    mode = state["mode"]
+    page = state.get("page", 0)
+    path = normalize_path(state.get("path", "Root"))
     children = get_subfolders_for_path(db, path)
 
     def folder_label(name: str) -> str:
         full = normalize_path(f"{path}/{name}")
-        n    = count_all_in_tree(db, full)
+        n = count_all_in_tree(db, full)
         return f"📁 {name}  ({n})" if n else f"📁 {name}"
 
     # In rename mode, folders are navigable (cd:) AND each has an individual rename button.
@@ -755,11 +764,11 @@ async def show_folder_list(query, user_id: int) -> None:
 
     top: list[list[InlineKeyboardButton]] = []
     total_files = len(get_files_in_folder(db, path))
-    file_info   = f" · {total_files} file{'s' if total_files != 1 else ''} here" if total_files else ""
+    file_info = f" · {total_files} file{'s' if total_files != 1 else ''} here" if total_files else ""
 
     if mode == "store":
-        top.append([InlineKeyboardButton("📥 Store here",  callback_data="action:store_here")])
-        top.append([InlineKeyboardButton("➕ New Folder",   callback_data="action:new_folder")])
+        top.append([InlineKeyboardButton("📥 Store here", callback_data="action:store_here")])
+        top.append([InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")])
     elif mode == "rename":
         # Show current folder's rename button (hidden at Root)
         if path != "Root":
@@ -776,7 +785,7 @@ async def show_folder_list(query, user_id: int) -> None:
             )])
     elif mode == "move_file":
         if state.get("move_target") is not None:
-            db2   = load_db()
+            db2 = load_db()
             fitem = db2.get(str(state["move_target"]), {})
             fname = fitem.get("filename", "file")
             top.append([InlineKeyboardButton(
@@ -811,29 +820,29 @@ async def show_folder_list(query, user_id: int) -> None:
     top.append([InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")])
 
     mode_headers = {
-        "store":       f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
-        "retrieve":    f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
-        "delete":      f"🗑 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
-        "rename":      f"✏️ <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
-        "move_file":   f"🔀 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
+        "store": f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
+        "retrieve": f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
+        "delete": f"🗑 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
+        "rename": f"✏️ <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
+        "move_file": f"🔀 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
         "move_folder": f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
     }
     header = mode_headers.get(mode, f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}")
 
     mode_suffixes = {
-        "store":       "\n\nChoose a subfolder or store here:",
-        "retrieve":    "\n\nSelect a folder to browse:",
-        "delete":      "\n\nSelect a folder to manage:",
-        "rename":      "\n\nEnter a subfolder to rename its contents, or tap ✏️ to rename the current folder:",
-        "move_file":   "\n\nNavigate to the destination folder:",
+        "store": "\n\nChoose a subfolder or store here:",
+        "retrieve": "\n\nSelect a folder to browse:",
+        "delete": "\n\nSelect a folder to manage:",
+        "rename": "\n\nEnter a subfolder to rename its contents, or tap ✏️ to rename the current folder:",
+        "move_file": "\n\nNavigate to the destination folder:",
         "move_folder": "\n\nNavigate to the new parent folder:",
     }
     no_child_suffixes = {
-        "store":       "\n\nNo subfolders — store here or create one:",
-        "retrieve":    "\n\nNo subfolders here.",
-        "delete":      "\n\nNo subfolders.",
-        "rename":      "\n\nNo subfolders here. Use ✏️ to rename this folder.",
-        "move_file":   "\n\nNo subfolders — move here or go up.",
+        "store": "\n\nNo subfolders — store here or create one:",
+        "retrieve": "\n\nNo subfolders here.",
+        "delete": "\n\nNo subfolders.",
+        "rename": "\n\nNo subfolders here. Use ✏️ to rename this folder.",
+        "move_file": "\n\nNo subfolders — move here or go up.",
         "move_folder": "\n\nNo subfolders — move here or go up.",
     }
 
@@ -846,20 +855,21 @@ async def show_folder_list(query, user_id: int) -> None:
         return
 
     text = header + mode_suffixes.get(mode, "\n\nSelect a folder:")
-    kb   = build_paginated_keyboard(items, page, extra_top_rows=top)
+    kb = build_paginated_keyboard(items, page, extra_top_rows=top)
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
 
 async def show_files_in_folder(query, user_id: int) -> None:
-    db    = load_db()
+    db = load_db()
     state = user_state.setdefault(user_id, _fresh_state())
     state["view"] = "files"
-    path  = normalize_path(state.get("path", "Root"))
-    page  = state.get("page", 0)
-    mode  = state["mode"]
+    path = normalize_path(state.get("path", "Root"))
+    page = state.get("page", 0)
+    mode = state["mode"]
     files = get_files_in_folder(db, path)
 
     sort_order = state.get("sort_order", "newest")
+
     # Favourites always float to the top
     def _sort_key(f: dict):
         fav = 0 if f.get("favourite") else 1
@@ -889,11 +899,11 @@ async def show_files_in_folder(query, user_id: int) -> None:
         files_rest.sort(key=lambda f: f.get("filename", "").lower())
         files = files_fav + files_rest
 
-    _next_sort  = {"newest": "oldest", "oldest": "alpha", "alpha": "newest"}
+    _next_sort = {"newest": "oldest", "oldest": "alpha", "alpha": "newest"}
     _sort_label = {"newest": "🕐 Newest", "oldest": "🕑 Oldest", "alpha": "🔤 A→Z"}
 
     back_row = [InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")]
-    menu_row = [InlineKeyboardButton("🏠 Main Menu",       callback_data="action:menu")]
+    menu_row = [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]
 
     if not files:
         extra: list[list] = [back_row]
@@ -920,20 +930,20 @@ async def show_files_in_folder(query, user_id: int) -> None:
             menu_row,
         ]
         items = [
-            (f"🗑 {file_type_emoji(f.get('type','document'))} {f['filename']}",
+            (f"🗑 {file_type_emoji(f.get('type', 'document'))} {f['filename']}",
              f"del_file:{f['message_id']}")
             for f in files
         ]
-        kb   = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=bot_)
+        kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=bot_)
         text = f"🗑 <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file to delete it:"
 
     elif mode == "rename":
         items = [
-            (f"✏️ {file_type_emoji(f.get('type','document'))} {f['filename']}",
+            (f"✏️ {file_type_emoji(f.get('type', 'document'))} {f['filename']}",
              f"rename_file:{f['message_id']}")
             for f in files
         ]
-        kb   = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
+        kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
         text = f"✏️ <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file to rename it:"
 
     elif mode == "move_file":
@@ -941,14 +951,14 @@ async def show_files_in_folder(query, user_id: int) -> None:
         if move_target is None:
             # Step 1: pick the file
             items = [
-                (f"🔀 {file_type_emoji(f.get('type','document'))} {f['filename']}",
+                (f"🔀 {file_type_emoji(f.get('type', 'document'))} {f['filename']}",
                  f"pick_move_file:{f['message_id']}")
                 for f in files
             ]
-            kb   = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
+            kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
             text = f"🔀 <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file to move:"
         else:
-            db2   = load_db()
+            db2 = load_db()
             fitem = db2.get(str(move_target), {})
             fname = fitem.get("filename", f"ID {move_target}")
             top_rows = [
@@ -956,10 +966,10 @@ async def show_files_in_folder(query, user_id: int) -> None:
                 back_row,
             ]
             items = [
-                (f"{file_type_emoji(f.get('type','document'))} {f['filename']}", "noop")
+                (f"{file_type_emoji(f.get('type', 'document'))} {f['filename']}", "noop")
                 for f in files
             ]
-            kb   = build_paginated_keyboard(items, page, extra_top_rows=top_rows, extra_bottom_rows=[menu_row])
+            kb = build_paginated_keyboard(items, page, extra_top_rows=top_rows, extra_bottom_rows=[menu_row])
             text = (
                 f"🔀 Moving: <b>{_esc(fname)}</b>\n\n"
                 f"Destination: <b>{_esc(format_breadcrumb(path))}</b>\n\n"
@@ -973,11 +983,11 @@ async def show_files_in_folder(query, user_id: int) -> None:
             callback_data=f"sort:{_next_sort[sort_order]}"
         )]
         items = [
-            (f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type','document'))} {f['filename']}",
+            (f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type', 'document'))} {f['filename']}",
              f"file_action:{f['message_id']}")
             for f in files
         ]
-        kb   = build_paginated_keyboard(
+        kb = build_paginated_keyboard(
             items, page,
             extra_top_rows=[sort_row, back_row],
             extra_bottom_rows=[menu_row]
@@ -989,13 +999,13 @@ async def show_files_in_folder(query, user_id: int) -> None:
 
 async def show_store_prompt(query, user_id: int) -> int:
     state = user_state.setdefault(user_id, _fresh_state("store"))
-    state["mode"]        = "store"
-    state["view"]        = "files"
+    state["mode"] = "store"
+    state["view"] = "files"
     state["store_count"] = 0
-    state["last_btn_msg"]= None
+    state["last_btn_msg"] = None
     path = normalize_path(state.get("path", "Root"))
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⬆ Up",        callback_data="action:up")],
+        [InlineKeyboardButton("⬆ Up", callback_data="action:up")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
@@ -1010,20 +1020,20 @@ async def show_store_prompt(query, user_id: int) -> int:
 
 async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
     """Per-file action card: retrieve, rename, move, delete, duplicate, favourite."""
-    db   = load_db()
+    db = load_db()
     item = db.get(str(message_id))
     if not item:
         await query.answer("⚠️ File not found.", show_alert=True)
         return ConversationHandler.END
 
-    fname   = item.get("filename", f"ID {message_id}")
-    ftype   = item.get("type", "document")
-    folder  = format_breadcrumb(item.get("folder", "Root"))
-    stored  = item.get("stored_at", "unknown")
-    fav     = item.get("favourite", False)
-    emoji   = file_type_emoji(ftype)
+    fname = item.get("filename", f"ID {message_id}")
+    ftype = item.get("type", "document")
+    folder = format_breadcrumb(item.get("folder", "Root"))
+    stored = item.get("stored_at", "unknown")
+    fav = item.get("favourite", False)
+    emoji = file_type_emoji(ftype)
     fav_btn = "⭐ Unfavourite" if fav else "☆ Favourite"
-    fav_cb  = f"unfav_file:{message_id}" if fav else f"fav_file:{message_id}"
+    fav_cb = f"unfav_file:{message_id}" if fav else f"fav_file:{message_id}"
 
     state = user_state.get(user_id, {})
     # If we came from search, back should return to search results
@@ -1031,13 +1041,13 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📤 Retrieve", callback_data=f"do_retrieve:{message_id}"),
-         InlineKeyboardButton(fav_btn,       callback_data=fav_cb)],
-        [InlineKeyboardButton("✏️ Rename",   callback_data=f"rename_file:{message_id}"),
-         InlineKeyboardButton("🔀 Move",     callback_data=f"pick_move_file:{message_id}")],
-        [InlineKeyboardButton("📋 Duplicate",callback_data=f"do_duplicate:{message_id}"),
-         InlineKeyboardButton("🗑 Delete",   callback_data=f"del_file:{message_id}")],
-        [InlineKeyboardButton("◀ Back",      callback_data=back_cb),
-         InlineKeyboardButton("🏠 Menu",     callback_data="action:menu")],
+         InlineKeyboardButton(fav_btn, callback_data=fav_cb)],
+        [InlineKeyboardButton("✏️ Rename", callback_data=f"rename_file:{message_id}"),
+         InlineKeyboardButton("🔀 Move", callback_data=f"pick_move_file:{message_id}")],
+        [InlineKeyboardButton("📋 Duplicate", callback_data=f"do_duplicate:{message_id}"),
+         InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
+        [InlineKeyboardButton("◀ Back", callback_data=back_cb),
+         InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
         f"{emoji} <b>{_esc(fname)}</b>\n\n"
@@ -1052,32 +1062,32 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
 
 async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     """Folder info card: file count, subfolder count, newest file, actions."""
-    state    = user_state.get(user_id, {})
+    state = user_state.get(user_id, {})
     # NOTE: the cd: handler already advanced state["path"] to this folder's
     # full path before calling us — do NOT append folder_name again here,
     # or every nested view ends up duplicated (e.g. Root/Videos/Videos).
     full_path = normalize_path(state.get("path", "Root"))
     db = load_db()
 
-    direct_files  = len(get_files_in_folder(db, full_path))
-    tree_files    = count_all_in_tree(db, full_path)
-    subfolders    = get_subfolders_for_path(db, full_path)
-    sub_count     = len(subfolders)
+    direct_files = len(get_files_in_folder(db, full_path))
+    tree_files = count_all_in_tree(db, full_path)
+    subfolders = get_subfolders_for_path(db, full_path)
+    sub_count = len(subfolders)
 
     # Newest file in tree
     tree_items = [i for i in db.values()
-                  if normalize_path(i.get("folder","Root")).startswith(full_path)
-                  or normalize_path(i.get("folder","Root")) == full_path]
+                  if normalize_path(i.get("folder", "Root")).startswith(full_path)
+                  or normalize_path(i.get("folder", "Root")) == full_path]
     tree_items_dated = [i for i in tree_items if i.get("stored_at")]
     newest = max(tree_items_dated, key=lambda x: x["stored_at"])["stored_at"][:10] if tree_items_dated else "—"
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📂 Browse files", callback_data="action:enter_folder_files"),
-         InlineKeyboardButton("✏️ Rename",       callback_data="action:rename_this_folder")],
-        [InlineKeyboardButton("📁 Move folder",  callback_data="action:start_move_this_folder"),
-         InlineKeyboardButton("🗑 Delete tree",  callback_data="action:ask_del_tree")],
-        [InlineKeyboardButton("◀ Back",          callback_data="action:back_folders"),
-         InlineKeyboardButton("🏠 Menu",         callback_data="action:menu")],
+         InlineKeyboardButton("✏️ Rename", callback_data="action:rename_this_folder")],
+        [InlineKeyboardButton("📁 Move folder", callback_data="action:start_move_this_folder"),
+         InlineKeyboardButton("🗑 Delete tree", callback_data="action:ask_del_tree")],
+        [InlineKeyboardButton("◀ Back", callback_data="action:back_folders"),
+         InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
         f"📁 <b>{_esc(format_breadcrumb(full_path))}</b>\n\n"
@@ -1096,7 +1106,7 @@ async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
 # ---------------------------------------------------------------------------
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query   = update.callback_query
+    query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
@@ -1104,7 +1114,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer("⛔ Unauthorized.", show_alert=True)
         return ConversationHandler.END
 
-    data  = query.data
+    data = query.data
     state = user_state.setdefault(user_id, _fresh_state())
 
     # ── no-op ─────────────────────────────────────────────────────────────────
@@ -1143,7 +1153,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── recent (inline) ───────────────────────────────────────────────────────
     if data == "action:recent":
-        db    = load_db()
+        db = load_db()
         items = get_recent_files(db, RECENT_N)
         state["mode"] = "retrieve"
         if not items:
@@ -1156,8 +1166,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         kb_items = [
             (
-                f"{file_type_emoji(r.get('type','document'))} {r['filename']}  "
-                f"[{format_breadcrumb(r.get('folder','Root'))}]",
+                f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}  "
+                f"[{format_breadcrumb(r.get('folder', 'Root'))}]",
                 f"file_action:{r['message_id']}",
             )
             for r in items
@@ -1174,8 +1184,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── favourites (inline) ───────────────────────────────────────────────────
     if data == "action:favourites":
-        db    = load_db()
-        favs  = get_favourite_files(db)
+        db = load_db()
+        favs = get_favourite_files(db)
         state["mode"] = "retrieve"
         if not favs:
             await query.edit_message_text(
@@ -1187,7 +1197,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         kb_items = [
             (
-                f"⭐ {f['filename']}  [{format_breadcrumb(f.get('folder','Root'))}]",
+                f"⭐ {f['filename']}  [{format_breadcrumb(f.get('folder', 'Root'))}]",
                 f"file_action:{f['message_id']}",
             )
             for f in favs
@@ -1197,7 +1207,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             extra_bottom_rows=[[InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]],
         )
         await query.edit_message_text(
-            f"⭐ <b>Favourites</b> — {len(favs)} file{'s' if len(favs)!=1 else ''}:\n\nTap a file for options:",
+            f"⭐ <b>Favourites</b> — {len(favs)} file{'s' if len(favs) != 1 else ''}:\n\nTap a file for options:",
             parse_mode="HTML", reply_markup=kb,
         )
         return ConversationHandler.END
@@ -1241,11 +1251,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 items, state["page"],
                 extra_bottom_rows=[
                     [InlineKeyboardButton("🔍 Search again", callback_data="action:search")],
-                    [InlineKeyboardButton("🏠 Main Menu",    callback_data="action:menu")],
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
                 ],
             )
             await query.edit_message_text(
-                f"🔍 <b>Search results</b> — page {state['page']+1}\n\nTap a file for options:",
+                f"🔍 <b>Search results</b> — page {state['page'] + 1}\n\nTap a file for options:",
                 parse_mode="HTML", reply_markup=kb,
             )
         else:
@@ -1266,7 +1276,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── navigate into folder (cd:) ────────────────────────────────────────────
     if data.startswith("cd:"):
         folder_name = data[3:]
-        current  = normalize_path(state.get("path", "Root"))
+        current = normalize_path(state.get("path", "Root"))
         new_path = normalize_path(f"{current}/{folder_name}")
         state["path"] = new_path
         state["page"] = 0
@@ -1279,9 +1289,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         if mode == "delete":
             db = load_db()
-            files_here      = len(get_files_in_folder(db, new_path))
+            files_here = len(get_files_in_folder(db, new_path))
             subfolders_here = len(get_subfolders_for_path(db, new_path))
-            total_tree      = count_all_in_tree(db, new_path)
+            total_tree = count_all_in_tree(db, new_path)
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton(
                     f"📂 Browse ({files_here} files · {subfolders_here} subfolders)",
@@ -1290,7 +1300,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                     f"🗑 Delete all ({total_tree} total)",
                     callback_data="action:ask_del_tree")],
                 [InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")],
-                [InlineKeyboardButton("🏠 Main Menu",       callback_data="action:menu")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ])
             await query.edit_message_text(
                 f"🗑 <b>{_esc(format_breadcrumb(new_path))}</b>\n"
@@ -1338,7 +1348,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── new folder ────────────────────────────────────────────────────────────
     if data == "action:new_folder":
         await query.edit_message_text(
-            f"📁 Creating inside <b>{_esc(format_breadcrumb(state.get('path','Root')))}</b>\n\n"
+            f"📁 Creating inside <b>{_esc(format_breadcrumb(state.get('path', 'Root')))}</b>\n\n"
             "Type the new folder name:",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(
@@ -1373,14 +1383,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── back to search results ────────────────────────────────────────────────
     if data == "action:back_search":
         items = state.get("search_items") or []
-        page  = state.get("page", 0)
+        page = state.get("page", 0)
         state["view"] = "search"
         if not items:
             await query.edit_message_text(
                 "🔍 Search session expired. Run a new search.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔍 Search", callback_data="action:search")],
-                    [InlineKeyboardButton("🏠 Menu",   callback_data="action:menu")],
+                    [InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
                 ]),
             )
             return ConversationHandler.END
@@ -1388,7 +1398,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             items, page,
             extra_bottom_rows=[
                 [InlineKeyboardButton("🔍 Search again", callback_data="action:search")],
-                [InlineKeyboardButton("🏠 Main Menu",    callback_data="action:menu")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ],
         )
         await query.edit_message_text(
@@ -1426,12 +1436,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("fav_file:") or data.startswith("unfav_file:"):
         action, _, mid = data.partition(":")
         msg_id = int(mid)
-        db     = load_db()
-        item   = db.get(str(msg_id))
+        db = load_db()
+        item = db.get(str(msg_id))
         if item:
             item["favourite"] = (action == "fav_file")
             save_db(db)
-            await query.answer("⭐ Added to favourites!" if item["favourite"] else "Removed from favourites.", show_alert=False)
+            await query.answer("⭐ Added to favourites!" if item["favourite"] else "Removed from favourites.",
+                               show_alert=False)
         return await show_file_action_panel(query, user_id, msg_id)
 
     # ── delete flow ───────────────────────────────────────────────────────────
@@ -1442,13 +1453,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
 
     if data in ("action:ask_del_tree", "action:delete_this_folder"):
-        path  = normalize_path(state.get("path", "Root"))
-        db    = load_db()
+        path = normalize_path(state.get("path", "Root"))
+        db = load_db()
         total = count_all_in_tree(db, path)
-        warn  = "\n\n⚠️ This folder contains a lot of files!" if total >= 20 else ""
+        warn = "\n\n⚠️ This folder contains a lot of files!" if total >= 20 else ""
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("⚠️ Yes, delete everything", callback_data="action:confirm_del_tree")],
-            [InlineKeyboardButton("❌ Cancel",                  callback_data="action:back_folders")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="action:back_folders")],
         ])
         await query.edit_message_text(
             f"⚠️ <b>WARNING</b>\n\n"
@@ -1461,7 +1472,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data == "action:confirm_del_tree":
         path = normalize_path(state.get("path", "Root"))
-        db   = load_db()
+        db = load_db()
         keys = delete_folder_tree(db, path)
         save_db(db)
         for k in keys:
@@ -1470,21 +1481,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             except Exception:
                 pass
         deleted_label = format_breadcrumb(path)
-        state["path"]  = parent_path(path)
-        state["page"]  = 0
-        state["view"]  = "folders"
+        state["path"] = parent_path(path)
+        state["page"] = 0
+        state["view"] = "folders"
         await query.answer(f"✅ '{deleted_label}' deleted ({len(keys)} files).", show_alert=True)
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
     if data.startswith("del_file:"):
         msg_id = int(data.split(":", 1)[1])
-        db     = load_db()
-        item   = db.get(str(msg_id))
-        fname  = item["filename"] if item else f"ID {msg_id}"
+        db = load_db()
+        item = db.get(str(msg_id))
+        fname = item["filename"] if item else f"ID {msg_id}"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("✅ Yes, delete", callback_data=f"confirm_del_file:{msg_id}")],
-            [InlineKeyboardButton("❌ Cancel",       callback_data="action:back_files")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="action:back_files")],
         ])
         await query.edit_message_text(
             f"🗑 Delete <b>{_esc(fname)}</b>?\n\nThis cannot be undone.",
@@ -1494,10 +1505,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if data.startswith("confirm_del_file:"):
         msg_id = int(data.split(":", 1)[1])
-        db     = load_db()
-        item   = db.pop(str(msg_id), None)
+        db = load_db()
+        item = db.pop(str(msg_id), None)
         save_db(db)
-        fname  = item["filename"] if item else f"ID {msg_id}"
+        fname = item["filename"] if item else f"ID {msg_id}"
         try:
             await context.bot.delete_message(ARCHIVE_CHAT_ID, msg_id)
         except Exception:
@@ -1511,12 +1522,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── rename file ───────────────────────────────────────────────────────────
     if data.startswith("rename_file:"):
         msg_id = int(data.split(":", 1)[1])
-        db     = load_db()
-        item   = db.get(str(msg_id))
+        db = load_db()
+        item = db.get(str(msg_id))
         if not item:
             await query.answer("File not found.", show_alert=True)
             return ConversationHandler.END
-        state["rename_target"]      = msg_id
+        state["rename_target"] = msg_id
         state["rename_folder_path"] = None
         await query.edit_message_text(
             f"✏️ <b>Rename File</b>\n\nCurrent name: <code>{_esc(item['filename'])}</code>\n\nSend the new name:",
@@ -1535,7 +1546,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         folder_name = path.rsplit("/", 1)[-1]
         state["rename_folder_path"] = path
-        state["rename_target"]      = None
+        state["rename_target"] = None
         await query.edit_message_text(
             f"✏️ <b>Rename Folder</b>\n\n"
             f"Current name: <code>{_esc(folder_name)}</code>\n"
@@ -1551,10 +1562,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── rename a subfolder from the folder info panel ─────────────────────────
     if data.startswith("rename_folder_item:"):
         folder_name = data[len("rename_folder_item:"):]
-        current   = normalize_path(state.get("path", "Root"))
+        current = normalize_path(state.get("path", "Root"))
         full_path = normalize_path(f"{current}/{folder_name}")
         state["rename_folder_path"] = full_path
-        state["rename_target"]      = None
+        state["rename_target"] = None
         await query.edit_message_text(
             f"✏️ <b>Rename Folder</b>\n\n"
             f"Current name: <code>{_esc(folder_name)}</code>\n"
@@ -1570,17 +1581,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── move file: pick a file ────────────────────────────────────────────────
     if data.startswith("pick_move_file:"):
         msg_id = int(data.split(":", 1)[1])
-        db     = load_db()
-        item   = db.get(str(msg_id))
+        db = load_db()
+        item = db.get(str(msg_id))
         if not item:
             await query.answer("⚠️ File not found.", show_alert=True)
             return ConversationHandler.END
         fname = item.get("filename", f"ID {msg_id}")
         state["move_target"] = msg_id
-        state["mode"]        = "move_file"
-        state["path"]        = "Root"
-        state["page"]        = 0
-        state["view"]        = "folders"
+        state["mode"] = "move_file"
+        state["path"] = "Root"
+        state["page"] = 0
+        state["view"] = "folders"
         await show_folder_list(query, user_id)
         return WAIT_MOVE_FILE_DST
 
@@ -1591,18 +1602,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⚠️ No file selected.", show_alert=True)
             return ConversationHandler.END
         dest_path = normalize_path(state.get("path", "Root"))
-        db        = load_db()
-        item      = db.get(str(move_target))
+        db = load_db()
+        item = db.get(str(move_target))
         if not item:
             await query.answer("⚠️ File no longer exists.", show_alert=True)
             state["move_target"] = None
             return ConversationHandler.END
         old_folder = format_breadcrumb(item.get("folder", "Root"))
-        fname      = item.get("filename", f"ID {move_target}")
+        fname = item.get("filename", f"ID {move_target}")
         item["folder"] = dest_path
         save_db(db)
         state["move_target"] = None
-        state["mode"]        = "retrieve"
+        state["mode"] = "retrieve"
         await query.answer("✅ Moved!", show_alert=False)
         await query.edit_message_text(
             f"✅ <b>Moved successfully</b>\n\n"
@@ -1623,10 +1634,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⚠️ Cannot move Root.", show_alert=True)
             return ConversationHandler.END
         state["move_folder_path"] = full_path
-        state["mode"]             = "move_folder"
-        state["path"]             = "Root"
-        state["page"]             = 0
-        state["view"]             = "folders"
+        state["mode"] = "move_folder"
+        state["path"] = "Root"
+        state["page"] = 0
+        state["view"] = "folders"
         await show_folder_list(query, user_id)
         return WAIT_MOVE_DEST
 
@@ -1637,7 +1648,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⚠️ No folder selected.", show_alert=True)
             return ConversationHandler.END
         new_parent = normalize_path(state.get("path", "Root"))
-        mfp_norm   = normalize_path(mfp)
+        mfp_norm = normalize_path(mfp)
         # Guard: cannot move into itself or a child
         if new_parent == mfp_norm or new_parent.startswith(mfp_norm + "/"):
             await query.answer("⚠️ Cannot move a folder into itself.", show_alert=True)
@@ -1654,8 +1665,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         updated, new_full = move_folder_in_db(db, mfp_norm, new_parent)
         save_db(db)
         state["move_folder_path"] = None
-        state["mode"]             = "retrieve"
-        state["path"]             = new_full
+        state["mode"] = "retrieve"
+        state["path"] = new_full
         await query.answer("✅ Folder moved!", show_alert=False)
         await query.edit_message_text(
             f"✅ <b>Folder moved</b>\n\n"
@@ -1671,8 +1682,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── duplicate ─────────────────────────────────────────────────────────────
     if data.startswith("do_duplicate:"):
-        src_id   = int(data.split(":", 1)[1])
-        db       = load_db()
+        src_id = int(data.split(":", 1)[1])
+        db = load_db()
         src_item = db.get(str(src_id))
         if not src_item:
             await query.answer("⚠️ File not found.", show_alert=True)
@@ -1687,14 +1698,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer(f"⚠️ Duplicate failed: {e}", show_alert=True)
             return ConversationHandler.END
         orig_name = src_item.get("filename", f"file_{src_id}")
-        dup_name  = f"Copy of {orig_name}"
+        dup_name = f"Copy of {orig_name}"
         db[str(copied.message_id)] = {
-            "filename":   dup_name,
-            "folder":     src_item.get("folder", "Root"),
+            "filename": dup_name,
+            "folder": src_item.get("folder", "Root"),
             "message_id": copied.message_id,
-            "type":       src_item.get("type", "document"),
-            "stored_at":  _now_iso(),
-            "favourite":  False,
+            "type": src_item.get("type", "document"),
+            "stored_at": _now_iso(),
+            "favourite": False,
         }
         save_db(db)
         await query.answer("📋 Duplicated!", show_alert=False)
@@ -1702,11 +1713,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"📋 <b>Duplicated</b>\n\n"
             f"Original: <code>{_esc(orig_name)}</code>\n"
             f"Copy: <code>{_esc(dup_name)}</code>\n"
-            f"In: {_esc(format_breadcrumb(src_item.get('folder','Root')))}",
+            f"In: {_esc(format_breadcrumb(src_item.get('folder', 'Root')))}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
-                [InlineKeyboardButton("🏠 Main Menu",      callback_data="action:menu")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ]),
         )
         return ConversationHandler.END
@@ -1720,8 +1731,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def receive_new_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
-    uid         = update.effective_user.id
+        await deny(update);
+        return ConversationHandler.END
+    uid = update.effective_user.id
     folder_name = update.message.text.strip()
     if not folder_name:
         await update.message.reply_text("Folder name cannot be empty. Try again:")
@@ -1732,15 +1744,15 @@ async def receive_new_folder_name(update: Update, context: ContextTypes.DEFAULT_
     if len(folder_name) > 64:
         await update.message.reply_text("Folder name too long (max 64 chars). Try again:")
         return WAIT_NEW_FOLDER
-    state    = user_state.setdefault(uid, _fresh_state("store"))
-    current  = normalize_path(state.get("path", "Root"))
+    state = user_state.setdefault(uid, _fresh_state("store"))
+    current = normalize_path(state.get("path", "Root"))
     new_path = normalize_path(f"{current}/{folder_name}")
     state.update({"path": new_path, "page": 0, "view": "folders", "store_count": 0, "last_btn_msg": None})
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store here",   callback_data="action:store_here")],
+        [InlineKeyboardButton("📥 Store here", callback_data="action:store_here")],
         [InlineKeyboardButton("➕ New Subfolder", callback_data="action:new_folder")],
-        [InlineKeyboardButton("⬆ Up",            callback_data="action:up")],
-        [InlineKeyboardButton("🏠 Main Menu",     callback_data="action:menu")],
+        [InlineKeyboardButton("⬆ Up", callback_data="action:up")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
     await update.message.reply_text(
         f"✅ Folder <b>{_esc(format_breadcrumb(new_path))}</b> created.\n\nStore here, add subfolders, or go up:",
@@ -1755,11 +1767,12 @@ async def receive_new_folder_name(update: Update, context: ContextTypes.DEFAULT_
 
 async def receive_rename_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
-    uid      = update.effective_user.id
+        await deny(update);
+        return ConversationHandler.END
+    uid = update.effective_user.id
     new_name = update.message.text.strip()
-    state    = user_state.get(uid, {})
-    msg_id   = state.get("rename_target")
+    state = user_state.get(uid, {})
+    msg_id = state.get("rename_target")
     if not new_name:
         await update.message.reply_text("Name cannot be empty. Try again:")
         return WAIT_RENAME_INPUT
@@ -1769,13 +1782,13 @@ async def receive_rename_input(update: Update, context: ContextTypes.DEFAULT_TYP
     if msg_id is None:
         await update.message.reply_text("⚠️ No file selected. Returning to menu.")
         return ConversationHandler.END
-    db   = load_db()
+    db = load_db()
     item = db.get(str(msg_id))
     if not item:
         await update.message.reply_text("⚠️ File not found.", reply_markup=main_menu_keyboard())
         return ConversationHandler.END
-    old_name          = item["filename"]
-    item["filename"]  = new_name
+    old_name = item["filename"]
+    item["filename"] = new_name
     save_db(db)
     state["rename_target"] = None
     back_cb = "action:back_search" if state.get("view") == "search" else "action:back_files"
@@ -1798,10 +1811,11 @@ async def receive_rename_input(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def receive_rename_folder_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
-    uid      = update.effective_user.id
+        await deny(update);
+        return ConversationHandler.END
+    uid = update.effective_user.id
     new_name = update.message.text.strip()
-    state    = user_state.get(uid, {})
+    state = user_state.get(uid, {})
     old_path = state.get("rename_folder_path")
     if not new_name:
         await update.message.reply_text("Folder name cannot be empty. Try again:")
@@ -1818,9 +1832,9 @@ async def receive_rename_folder_input(update: Update, context: ContextTypes.DEFA
     if old_path == "Root":
         await update.message.reply_text("⚠️ Cannot rename Root.")
         return ConversationHandler.END
-    parent   = parent_path(old_path)
+    parent = parent_path(old_path)
     new_path = normalize_path(f"{parent}/{new_name}")
-    db       = load_db()
+    db = load_db()
     # Collision check
     siblings = get_subfolders_for_path(db, parent)
     old_name = old_path.rsplit("/", 1)[-1]
@@ -1831,14 +1845,14 @@ async def receive_rename_folder_input(update: Update, context: ContextTypes.DEFA
         )
         return WAIT_RENAME_FOLDER
     old_display = format_breadcrumb(old_path)
-    updated     = rename_folder_in_db(db, old_path, new_path)
+    updated = rename_folder_in_db(db, old_path, new_path)
     save_db(db)
     state["rename_folder_path"] = None
-    state["path"]               = new_path
+    state["path"] = new_path
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("📂 Open renamed folder", callback_data="action:view_files")],
-        [InlineKeyboardButton("⬆ Up",                   callback_data="action:up")],
-        [InlineKeyboardButton("🏠 Main Menu",            callback_data="action:menu")],
+        [InlineKeyboardButton("⬆ Up", callback_data="action:up")],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
     await update.message.reply_text(
         f"✅ <b>Folder renamed</b>\n\n"
@@ -1855,17 +1869,18 @@ async def receive_rename_folder_input(update: Update, context: ContextTypes.DEFA
 # ---------------------------------------------------------------------------
 
 _STORE_FILTER = (
-    filters.Document.ALL | filters.PHOTO | filters.VIDEO |
-    filters.AUDIO | filters.VOICE | filters.Sticker.ALL
-) & ~filters.COMMAND
+                        filters.Document.ALL | filters.PHOTO | filters.VIDEO |
+                        filters.AUDIO | filters.VOICE | filters.Sticker.ALL
+                ) & ~filters.COMMAND
 
 
 async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
-        await deny(update); return ConversationHandler.END
-    uid     = update.effective_user.id
+        await deny(update);
+        return ConversationHandler.END
+    uid = update.effective_user.id
     message = update.message
-    state   = user_state.get(uid, {})
+    state = user_state.get(uid, {})
     folder_path = normalize_path(state.get("path", "Root"))
 
     has_media = (message.document or message.photo or message.video or
@@ -1889,33 +1904,33 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_type, filename = "document", resolve_filename(message, f"file_{copied.message_id}")
         file_size = message.document.file_size
     elif message.photo:
-        file_type, filename = "photo",    resolve_filename(message, f"photo_{copied.message_id}.jpg")
+        file_type, filename = "photo", resolve_filename(message, f"photo_{copied.message_id}.jpg")
         file_size = message.photo[-1].file_size if message.photo else None
     elif message.video:
-        file_type, filename = "video",    resolve_filename(message, f"video_{copied.message_id}.mp4")
+        file_type, filename = "video", resolve_filename(message, f"video_{copied.message_id}.mp4")
         file_size = message.video.file_size
     elif message.audio:
-        file_type, filename = "audio",    resolve_filename(message, f"audio_{copied.message_id}")
+        file_type, filename = "audio", resolve_filename(message, f"audio_{copied.message_id}")
         file_size = message.audio.file_size
     elif message.voice:
-        file_type, filename = "voice",    resolve_filename(message, f"voice_{copied.message_id}.ogg")
+        file_type, filename = "voice", resolve_filename(message, f"voice_{copied.message_id}.ogg")
         file_size = message.voice.file_size
     elif message.sticker:
         file_type = "sticker"
-        emoji     = message.sticker.emoji or ""
-        filename  = resolve_filename(message, f"sticker_{copied.message_id}{emoji}")
+        emoji = message.sticker.emoji or ""
+        filename = resolve_filename(message, f"sticker_{copied.message_id}{emoji}")
         file_size = message.sticker.file_size
     else:
         return WAIT_STORE_FILE
 
     db = load_db()
     record: dict = {
-        "filename":   filename,
-        "folder":     folder_path,
+        "filename": filename,
+        "folder": folder_path,
         "message_id": copied.message_id,
-        "type":       file_type,
-        "stored_at":  _now_iso(),
-        "favourite":  False,
+        "type": file_type,
+        "stored_at": _now_iso(),
+        "favourite": False,
     }
     if file_size is not None:
         record["file_size"] = file_size
@@ -1934,7 +1949,7 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📥 Store another  ({count} stored)", callback_data="action:store_here")],
-        [InlineKeyboardButton("⬆ Up",        callback_data="action:up")],
+        [InlineKeyboardButton("⬆ Up", callback_data="action:up")],
         [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
     btn_msg = await message.reply_text(
@@ -1953,7 +1968,7 @@ async def move_text_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         "Use the folder navigation buttons above to choose the destination.\n/cancel to abort."
     )
-    uid  = update.effective_user.id
+    uid = update.effective_user.id
     mode = user_state.get(uid, {}).get("mode", "")
     return WAIT_MOVE_FILE_DST if mode == "move_file" else WAIT_MOVE_DEST
 
@@ -1970,7 +1985,7 @@ async def backup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     db = load_db()
     total_files, total_folders = len(db), sum(
-        1 for _ in {normalize_path(i.get("folder","Root")) for i in db.values()}
+        1 for _ in {normalize_path(i.get("folder", "Root")) for i in db.values()}
     )
     caption = (
         f"🗄 <b>Archive backup</b>\n"
@@ -2006,9 +2021,9 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     status = await update.message.reply_text("⏳ Downloading and validating…")
     try:
-        tg_file   = await context.bot.get_file(doc.file_id)
+        tg_file = await context.bot.get_file(doc.file_id)
         raw_bytes = await tg_file.download_as_bytearray()
-        new_data  = json.loads(raw_bytes.decode("utf-8"))
+        new_data = json.loads(raw_bytes.decode("utf-8"))
     except Exception as e:
         await status.edit_text(f"⚠️ Could not parse the file: {_esc(str(e))}", parse_mode="HTML")
         return
@@ -2019,7 +2034,7 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     DB_TMP_FILE.write_text(json.dumps(new_data, indent=2, ensure_ascii=False), encoding="utf-8")
     DB_TMP_FILE.replace(DB_FILE)
     total_files, total_folders = len(new_data), sum(
-        1 for _ in {normalize_path(i.get("folder","Root")) for i in new_data.values()}
+        1 for _ in {normalize_path(i.get("folder", "Root")) for i in new_data.values()}
     )
     await status.edit_text(
         f"✅ <b>Database restored</b>\n\n"
@@ -2049,7 +2064,7 @@ def _fmt_bytes(n) -> str:
 def _fmt_uptime(seconds: int) -> str:
     d, r = divmod(seconds, 86400)
     h, r = divmod(r, 3600)
-    m    = r // 60
+    m = r // 60
     if d:
         return f"{d}d {h}h {m}m"
     if h:
@@ -2091,7 +2106,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     status = await message.reply_text("\u23f3 Generating disk report\u2026")
 
     bot = context.bot
-    db  = load_db()
+    db = load_db()
 
     # 1. Fetch missing file sizes by forwarding archive messages
     missing = [k for k, v in db.items() if "file_size" not in v]
@@ -2137,23 +2152,22 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         total_disk = used_disk = free_disk = 0
 
     try:
-        with open("/proc/uptime") as f:
-            proc_uptime_s = float(f.read().split()[0])
-        uptime_str = _fmt_uptime(int(proc_uptime_s))
+        import time as _time
+        uptime_str = _fmt_uptime(int(_time.time()) - _BOT_START_TIME)
     except Exception:
         uptime_str = "n/a"
 
     try:
         import psutil
         ram_bytes = psutil.Process().memory_info().rss
-        ram_str   = _fmt_bytes(ram_bytes)
+        ram_str = _fmt_bytes(ram_bytes)
     except Exception:
         ram_str = "n/a"
 
-    all_sizes   = [v.get("file_size") for v in db.values()]
+    all_sizes = [v.get("file_size") for v in db.values()]
     known_sizes = [s for s in all_sizes if s is not None]
     unknown_cnt = len(all_sizes) - len(known_sizes)
-    total_tg    = sum(known_sizes)
+    total_tg = sum(known_sizes)
 
     type_counts: dict[str, int] = {}
     for v in db.values():
@@ -2166,13 +2180,13 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         reverse=True,
     )[:5]
 
-    dated  = [v for v in db.values() if v.get("stored_at")]
+    dated = [v for v in db.values() if v.get("stored_at")]
     oldest = min(dated, key=lambda x: x["stored_at"], default=None)
     newest = max(dated, key=lambda x: x["stored_at"], default=None)
 
     meta_files = [DB_FILE, DB_TMP_FILE] + [_backup_path(i) for i in range(1, BACKUP_COUNT + 1)]
-    meta_info  = [(p, p.stat().st_size if p.exists() else None) for p in meta_files]
-    last_save  = DB_FILE.stat().st_mtime if DB_FILE.exists() else None
+    meta_info = [(p, p.stat().st_size if p.exists() else None) for p in meta_files]
+    last_save = DB_FILE.stat().st_mtime if DB_FILE.exists() else None
     last_save_str = _fmt_ago(int(time.time() - last_save)) if last_save else "n/a"
 
     backup_health = []
@@ -2188,22 +2202,22 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     db_path_env = _os.environ.get("DB_PATH")
 
     # 3. Draw the PNG
-    SCALE   = 2          # render at 2x for crisp quality
-    W       = 520 * SCALE
-    BG      = (15, 17, 23)
-    CARD    = (22, 27, 38)
-    ACCENT  = (99, 102, 241)
-    TEAL    = (34, 211, 238)
-    AMBER   = (251, 191, 36)
-    GREEN   = (34, 197, 94)
-    RED     = (239, 68, 68)
-    TEXT1   = (226, 232, 240)
-    TEXT2   = (148, 163, 184)
-    TEXT3   = (75, 85, 99)
+    SCALE = 2  # render at 2x for crisp quality
+    W = 520 * SCALE
+    BG = (15, 17, 23)
+    CARD = (22, 27, 38)
+    ACCENT = (99, 102, 241)
+    TEAL = (34, 211, 238)
+    AMBER = (251, 191, 36)
+    GREEN = (34, 197, 94)
+    RED = (239, 68, 68)
+    TEXT1 = (226, 232, 240)
+    TEXT2 = (148, 163, 184)
+    TEXT3 = (75, 85, 99)
     DIVIDER = (31, 35, 51)
-    PAD     = 20 * SCALE
-    GAP     = 10 * SCALE
-    R       =  8 * SCALE
+    PAD = 14 * SCALE
+    GAP = 8 * SCALE
+    R = 8 * SCALE
 
     def load_font(size: int, bold: bool = False):
         try:
@@ -2218,21 +2232,22 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     F14 = load_font(14, bold=True)
     F20 = load_font(20, bold=True)
 
+    half_types = (len(type_counts) + 1) // 2
     SECTION_HEIGHTS = {
-        "header":  56 * SCALE,
-        "stat_row": 72 * SCALE,
-        "disk_bar": 54 * SCALE,
-        "types":   max(60, 32 + 20 * len(type_counts)) * SCALE,
-        "top5":    (max(50, 30 + 18 * len(top5)) * SCALE if top5 else 0),
-        "dates":   62 * SCALE,
-        "meta":    (30 + 18 * len([p for p, s in meta_info if s is not None])) * SCALE,
-        "backups": 80 * SCALE,
-        "footer":  34 * SCALE,
+        "header": 50 * SCALE,
+        "stat_row": 64 * SCALE,
+        "disk_bar": 58 * SCALE,
+        "types": (36 + 18 * (half_types + 1)) * SCALE,
+        "top5": ((30 + 17 * len(top5)) * SCALE if top5 else 0),
+        "dates": 60 * SCALE,
+        "meta": (28 + 17 * len([p for p, s in meta_info if s is not None])) * SCALE,
+        "backups": 62 * SCALE,
+        "footer": 28 * SCALE,
     }
     active = {k: v for k, v in SECTION_HEIGHTS.items() if v > 0}
     H = PAD + sum(active.values()) + GAP * (len(active) - 1) + PAD
 
-    img  = Image.new("RGB", (W, H), BG)
+    img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
 
     def rrect(x1, y1, x2, y2, r=R, fill=CARD):
@@ -2255,13 +2270,13 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     cy += sh + GAP
 
     # 3 stat cards
-    sh  = active["stat_row"]
-    cw  = (W - PAD * 2 - GAP * 2) // 3
+    sh = active["stat_row"]
+    cw = (W - PAD * 2 - GAP * 2) // 3
     tg_label = _fmt_bytes(total_tg) + (f" +{unknown_cnt} unk." if unknown_cnt else "")
     stats = [
-        ("Volume used",  _fmt_bytes(used_disk),  f"of {_fmt_bytes(total_disk)}"),
-        ("TG file size", tg_label,                f"{len(db)} files"),
-        ("RAM usage",    ram_str,                 "bot process"),
+        ("Volume used", _fmt_bytes(used_disk), f"of {_fmt_bytes(total_disk)}"),
+        ("TG file size", tg_label, f"{len(db)} files"),
+        ("RAM usage", ram_str, "bot process"),
     ]
     for i, (lbl, val, sub) in enumerate(stats):
         x = PAD + i * (cw + GAP)
@@ -2276,7 +2291,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     rrect(PAD, cy, W - PAD, cy + sh)
     pct = (used_disk / total_disk * 100) if total_disk else 0
     bar_color = GREEN if pct < 70 else (AMBER if pct < 90 else RED)
-    label(PAD + 12, cy + 9, f"disk usage  \u2014  {pct:.0f}% full  �  {_fmt_bytes(free_disk)} free")
+    label(PAD + 12, cy + 9, f"disk usage  -  {pct:.0f}% full  -  {_fmt_bytes(free_disk)} free")
     bx, by = PAD + 12, cy + 26
     bw, bh = W - PAD * 2 - 24, 8
     rrect(bx, by, bx + bw, by + bh, r=4, fill=DIVIDER)
@@ -2290,7 +2305,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     # Type breakdown
     sh = active["types"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    label(PAD + 12, cy + 9, f"file type breakdown  �  {len(db)} total")
+    label(PAD + 12, cy + 9, f"file type breakdown  -  {len(db)} total")
     DOT_COLORS = [ACCENT, TEAL, AMBER, GREEN, (236, 72, 153), (251, 146, 60)]
     type_order = sorted(type_counts.items(), key=lambda x: -x[1])
     total_files = len(db) or 1
@@ -2300,12 +2315,12 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         seg_w = max(2, int(bar_w * cnt / total_files))
         rrect(seg_x, cy + 24, seg_x + seg_w, cy + 30, r=3, fill=DOT_COLORS[idx2 % len(DOT_COLORS)])
         seg_x += seg_w
-    ry   = cy + 38
+    ry = cy + 38
     half = len(type_order) // 2 + len(type_order) % 2
     for idx2, (t, cnt) in enumerate(type_order):
         col_x = PAD + 12 if idx2 < half else W // 2 + 10
         row_y = ry + (idx2 % half) * 18
-        dc    = DOT_COLORS[idx2 % len(DOT_COLORS)]
+        dc = DOT_COLORS[idx2 % len(DOT_COLORS)]
         draw.ellipse([col_x, row_y + 4, col_x + 7, row_y + 11], fill=dc)
         draw.text((col_x + 14, row_y), t.capitalize(), font=F11, fill=TEXT2)
         draw.text((col_x + 14 + 80, row_y), str(cnt), font=F11, fill=TEXT1)
@@ -2318,7 +2333,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         label(PAD + 12, cy + 9, "top 5 largest files")
         max_sz = top5[0]["file_size"] or 1
         for idx2, item in enumerate(top5):
-            fy    = cy + 26 + idx2 * 17
+            fy = cy + 26 + idx2 * 17
             fname = item.get("filename", "?")
             fname = fname if len(fname) <= 42 else fname[:41] + "\u2026"
             sz_str = _fmt_bytes(item.get("file_size", 0))
@@ -2347,12 +2362,12 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     visible_meta = [(p, s) for p, s in meta_info if s is not None]
     sh = active["meta"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    label(PAD + 12, cy + 9, f"metadata files  �  last save {last_save_str}")
+    label(PAD + 12, cy + 9, f"metadata files  -  last save {last_save_str}")
     my = cy + 26
     for p, s in visible_meta:
-        is_live    = (p == DB_FILE)
+        is_live = (p == DB_FILE)
         name_color = TEXT1 if is_live else TEXT3
-        sz_str     = _fmt_bytes(s)
+        sz_str = _fmt_bytes(s)
         draw.text((PAD + 12, my), p.name, font=F11, fill=name_color)
         draw.text((W - PAD - 12 - int(draw.textlength(sz_str, font=F11)), my), sz_str,
                   font=F11, fill=ACCENT if is_live else TEXT3)
@@ -2362,27 +2377,27 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     # Backup health
     sh = active["backups"]
     rrect(PAD, cy, W - PAD, cy + sh)
-    label(PAD + 12, cy + 10, "backup health")
+    label(PAD + 12, cy + 9, "backup health")
     ok_count = backup_health.count("ok")
-    pill_w   = (W - PAD * 2 - 24 - GAP * (BACKUP_COUNT - 1)) // BACKUP_COUNT
+    pill_w = (W - PAD * 2 - 24 - GAP * (BACKUP_COUNT - 1)) // BACKUP_COUNT
     for i, bstatus in enumerate(backup_health):
         bx2 = PAD + 12 + i * (pill_w + GAP)
-        bc  = GREEN if bstatus == "ok" else (RED if bstatus == "corrupt" else TEXT3)
+        bc = GREEN if bstatus == "ok" else (RED if bstatus == "corrupt" else TEXT3)
         bg2 = (20, 30, 20) if bstatus == "ok" else (30, 20, 20)
-        draw.text((bx2 + pill_w // 2 - 6, cy + 24), f"B.{i+1}", font=F10, fill=TEXT3)
-        rrect(bx2, cy + 38, bx2 + pill_w, cy + 56, r=6, fill=bg2)
+        rrect(bx2, cy + 24, bx2 + pill_w, cy + 40, r=6, fill=bg2)
         dot_x = bx2 + pill_w // 2 - 4
-        draw.ellipse([dot_x, cy + 44, dot_x + 8, cy + 52], fill=bc)
-    issues  = [f"B.{i+1} {backup_health[i]}" for i in range(BACKUP_COUNT) if backup_health[i] != "ok"]
+        draw.ellipse([dot_x, cy + 30, dot_x + 8, cy + 38], fill=bc)
+        draw.text((bx2 + pill_w // 2 - 5, cy + 13), f"B.{i + 1}", font=F10, fill=TEXT3)
+    issues = [f"backup.{i + 1} {backup_health[i]}" for i in range(BACKUP_COUNT) if backup_health[i] != "ok"]
     summary = f"{ok_count} / {BACKUP_COUNT} healthy"
     if issues:
-        summary += "  |  " + ",  ".join(issues)
-    draw.text((PAD + 12, cy + 62), summary, font=F10, fill=TEXT3)
+        summary += "  �  " + ",  ".join(issues)
+    draw.text((PAD + 12, cy + 44), summary, font=F10, fill=TEXT3)
     cy += sh + GAP
 
     # Footer
     sh = active["footer"]
-    db_ok   = db_path_env is not None
+    db_ok = db_path_env is not None
     db_text = f"DB_PATH  {db_path_env}  OK" if db_ok else "DB_PATH not set  !!  metadata may not be on volume"
     draw.text((PAD + 4, cy + 10), db_text, font=F10, fill=GREEN if db_ok else RED)
     ts = _now_iso()[:19].replace("T", "  ")
@@ -2413,6 +2428,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         parse_mode="HTML",
     )
 
+
 # ---------------------------------------------------------------------------
 # /joinme + archive group protection
 # ---------------------------------------------------------------------------
@@ -2428,7 +2444,7 @@ async def joinme_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     invite_link = None
     try:
-        invite      = await bot.create_chat_invite_link(ARCHIVE_CHAT_ID, creates_join_request=False, member_limit=1)
+        invite = await bot.create_chat_invite_link(ARCHIVE_CHAT_ID, creates_join_request=False, member_limit=1)
         invite_link = invite.invite_link
     except Exception:
         invite_link = getattr(chat, "invite_link", None)
@@ -2466,13 +2482,13 @@ async def protect_archive_group(update: Update, context: ContextTypes.DEFAULT_TY
     event: ChatMemberUpdated = update.chat_member
     if event.chat.id != ARCHIVE_CHAT_ID:
         return
-    new  = event.new_chat_member
-    old  = event.old_chat_member
+    new = event.new_chat_member
+    old = event.old_chat_member
     user = new.user
-    bot  = context.bot
-    joined_statuses  = {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}
-    was_outside      = old.status in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED}
-    is_now_inside    = new.status in joined_statuses
+    bot = context.bot
+    joined_statuses = {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR}
+    was_outside = old.status in {ChatMemberStatus.LEFT, ChatMemberStatus.BANNED}
+    is_now_inside = new.status in joined_statuses
     if not (was_outside and is_now_inside):
         return
     if user.is_bot:
@@ -2489,7 +2505,7 @@ async def protect_archive_group(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         pass
     try:
-        name     = user.full_name
+        name = user.full_name
         username = f" (@{user.username})" if user.username else ""
         await bot.send_message(
             OWNER_ID,
@@ -2510,10 +2526,10 @@ app = Application.builder().token(BOT_TOKEN).post_init(set_commands).build()
 
 conv = ConversationHandler(
     entry_points=[
-        CommandHandler("start",   start),
-        CommandHandler("menu",    menu_command),
-        CommandHandler("recent",  recent_command),
-        CommandHandler("search",  search_command),
+        CommandHandler("start", start),
+        CommandHandler("menu", menu_command),
+        CommandHandler("recent", recent_command),
+        CommandHandler("search", search_command),
         CallbackQueryHandler(button_handler),
     ],
     states={
@@ -2548,20 +2564,20 @@ conv = ConversationHandler(
     },
     fallbacks=[
         CommandHandler("cancel", cancel),
-        CommandHandler("menu",   menu_command),
-        CommandHandler("start",  start),
+        CommandHandler("menu", menu_command),
+        CommandHandler("start", start),
     ],
     per_message=False,
     allow_reentry=True,
 )
 
 app.add_handler(conv)
-app.add_handler(CommandHandler("help",    help_command))
-app.add_handler(CommandHandler("stats",   stats_command))
-app.add_handler(CommandHandler("joinme",  joinme_command))
-app.add_handler(CommandHandler("backup",  backup_command))
+app.add_handler(CommandHandler("help", help_command))
+app.add_handler(CommandHandler("stats", stats_command))
+app.add_handler(CommandHandler("joinme", joinme_command))
+app.add_handler(CommandHandler("backup", backup_command))
 app.add_handler(CommandHandler("restore", restore_command))
-app.add_handler(CommandHandler("disk",    disk_command))
+app.add_handler(CommandHandler("disk", disk_command))
 app.add_handler(ChatMemberHandler(protect_archive_group, ChatMemberHandler.CHAT_MEMBER))
 
 if __name__ == "__main__":
