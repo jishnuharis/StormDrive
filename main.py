@@ -1,3 +1,32 @@
+"""
+Archive Bot — v4
+Changes from uploaded version:
+  FIXED:
+    - /help crash: switched to HTML parse_mode, no more Markdown special-char breakage
+    - Subfolder rename: cd: in rename mode now drills down (folders stay navigable);
+      rename_folder: only fires when user taps the rename-icon button, not cd:
+    - Move mode cd: now correctly shows folder list (not file list)
+    - pick_move no longer double-edits the message (removed the dead first edit)
+    - "Rename this folder" hidden at Root level
+    - /cancel properly resets move_target and all pending ops
+    - Sort preference preserved across folder navigation (not reset on mode change)
+    - Back-from-file-action returns to search results when view=="search"
+    - Stats (inline + command) shows full recursive breakdown
+    - Folder-info panel added (tap folder in retrieve mode)
+    - "Rename this folder" button also available in retrieve mode (not just rename mode)
+  REMOVED:
+    - /migrate_ist command and migrate_ist_command function
+    - migrate_ist from set_commands and help text
+    (IST timezone is still used for all timestamps; auto-migration at startup is kept)
+  ADDED:
+    - /recent — last 15 stored files with quick retrieve
+    - ⭐ Favourite / pin files — shows at top of folder, accessible via Favourites view
+    - Folder move — move an entire folder tree to a new parent
+    - Folder info panel — file count, subfolder count, newest file date
+    - Full recursive stats breakdown
+    - WAIT_MOVE_DEST conversation state (so /cancel works during move)
+"""
+
 from __future__ import annotations
 
 import json
@@ -29,18 +58,18 @@ from telegram.ext import (
 # Config
 # ---------------------------------------------------------------------------
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-ARCHIVE_CHAT_ID = int(os.environ["ARCHIVE_CHAT_ID"])
-OWNER_ID = int(os.environ["OWNER_ID"])
+BOT_TOKEN       = os.environ.get("BOT_TOKEN", "8860089092:AAFKLnebRVd_YyVWhVWfZa5mGFflFc_wvRw")
+ARCHIVE_CHAT_ID = int(os.environ.get("ARCHIVE_CHAT_ID", "-1003910547391"))
+OWNER_ID        = int(os.environ.get("OWNER_ID", "6618474423"))
 
-_DB_PATH = Path(os.environ.get("DB_PATH", "metadata.json"))
-_DB_DIR = _DB_PATH.parent
-DB_FILE = _DB_PATH
-DB_TMP_FILE = _DB_DIR / "metadata.tmp.json"
+_DB_PATH     = Path(os.environ.get("DB_PATH", "metadata.json"))
+_DB_DIR      = _DB_PATH.parent
+DB_FILE      = _DB_PATH
+DB_TMP_FILE  = _DB_DIR / "metadata.tmp.json"
 BACKUP_COUNT = 5
-PAGE_SIZE = 10
-RECENT_N = 15
-IST = timezone(timedelta(hours=5, minutes=30))
+PAGE_SIZE    = 10
+RECENT_N     = 15
+IST          = timezone(timedelta(hours=5, minutes=30))
 
 _DB_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -463,6 +492,7 @@ async def set_commands(app: Application) -> None:
         BotCommand("joinme",  "Get invite link & become admin in archive group"),
         BotCommand("backup",  "Download metadata.json as a file"),
         BotCommand("restore", "Reply to a .json file to restore the database"),
+        BotCommand("disk",    "Show real-time volume disk usage"),
     ])
 
 
@@ -1979,6 +2009,100 @@ async def restore_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 # ---------------------------------------------------------------------------
+# /disk  — real-time volume usage breakdown
+# ---------------------------------------------------------------------------
+
+async def disk_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not authorized(update):
+        return await deny(update)
+
+    import subprocess, shutil
+
+    lines: list[str] = []
+
+    # ── 1. Which directory is the volume? ────────────────────────────────────────────
+    vol_dir = str(_DB_DIR.resolve())
+    lines.append(f"📂 <b>Volume path:</b> <code>{vol_dir}</code>")
+
+    # ── 2. Disk free / total for that mount ───────────────────────────────────
+    try:
+        total, used, free = shutil.disk_usage(vol_dir)
+        def _fmt(n: int) -> str:
+            if n >= 1024**3: return f"{n/1024**3:.2f} GB"
+            if n >= 1024**2: return f"{n/1024**2:.1f} MB"
+            if n >= 1024:    return f"{n/1024:.1f} KB"
+            return f"{n} B"
+        pct = used * 100 // total
+        lines.append(
+            f"💾 <b>Disk (mount):</b> {_fmt(used)} used / {_fmt(total)} total "
+            f"({pct}% full, {_fmt(free)} free)"
+        )
+    except Exception as e:
+        lines.append(f"💾 Disk info unavailable: {e}")
+
+    # ── 3. Per-file sizes for every metadata file ────────────────────────────
+    lines.append("\n📄 <b>Metadata files:</b>")
+    meta_files = [DB_FILE, DB_TMP_FILE] + [_backup_path(i) for i in range(1, BACKUP_COUNT + 1)]
+    any_meta = False
+    for p in meta_files:
+        if p.exists():
+            sz = p.stat().st_size
+            lines.append(f"  <code>{p.name:<30}</code>  {sz:>8,} B  ({sz/1024:.1f} KB)")
+            any_meta = True
+    if not any_meta:
+        lines.append("  (none found)")
+
+    # ── 4. Top space consumers under the volume dir (du -sh *) ───────────────────
+    lines.append(f"\n🔍 <b>Top items in <code>{vol_dir}</code>:</b>")
+    try:
+        children = sorted(Path(vol_dir).iterdir())
+        if not children:
+            lines.append("  (directory is empty)")
+        else:
+            result = subprocess.run(
+                ["du", "-sh", "--apparent-size"] + [str(p) for p in children],
+                capture_output=True, text=True, timeout=15,
+            )
+            du_lines = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+
+            def _du_bytes(line: str) -> float:
+                s = line.split(None, 1)[0].upper() if line else "0"
+                try:
+                    if s.endswith("G"): return float(s[:-1]) * 1024**3
+                    if s.endswith("M"): return float(s[:-1]) * 1024**2
+                    if s.endswith("K"): return float(s[:-1]) * 1024
+                    return float(s)
+                except ValueError:
+                    return 0.0
+
+            du_lines.sort(key=_du_bytes, reverse=True)
+            for dl in du_lines[:20]:
+                size, _, path_s = dl.partition("\t")
+                name = Path(path_s).name if path_s else dl
+                lines.append(f"  <code>{size:>8}  {name}</code>")
+    except FileNotFoundError:
+        lines.append("  <i>du not available on this system</i>")
+    except subprocess.TimeoutExpired:
+        lines.append("  <i>du timed out</i>")
+    except Exception as e:
+        lines.append(f"  <i>Error: {_esc(str(e))}</i>")
+
+    # ── 5. DB_PATH env var check ───────────────────────────────────────────────────
+    db_path_env = os.environ.get("DB_PATH")
+    if db_path_env:
+        lines.append(f"\n⚙️ <b>DB_PATH:</b> <code>{db_path_env}</code> ✔️")
+    else:
+        lines.append(
+            "\n⚙️ <b>DB_PATH env var: NOT SET</b> ⚠️\n"
+            "  Using default <code>metadata.json</code> in the app directory.\n"
+            "  Your metadata is <b>not on the volume</b> and will be lost on redeploy.\n"
+            "  Fix: set <code>DB_PATH=/data/metadata.json</code> in Railway variables."
+        )
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # /joinme + archive group protection
 # ---------------------------------------------------------------------------
 
@@ -2126,6 +2250,7 @@ app.add_handler(CommandHandler("stats",   stats_command))
 app.add_handler(CommandHandler("joinme",  joinme_command))
 app.add_handler(CommandHandler("backup",  backup_command))
 app.add_handler(CommandHandler("restore", restore_command))
+app.add_handler(CommandHandler("disk",    disk_command))
 app.add_handler(ChatMemberHandler(protect_archive_group, ChatMemberHandler.CHAT_MEMBER))
 
 if __name__ == "__main__":
