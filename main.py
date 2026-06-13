@@ -2030,15 +2030,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["page"] = 0
             state["view"] = "files"
             await query.answer(f"✅ Moved {moved} file(s)!", show_alert=False)
-            await query.edit_message_text(
-                f"✅ <b>Moved successfully</b> — {moved} file(s)\n\n"
-                f"To: {_esc(format_breadcrumb(dest_path))}",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
-                    [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-                ]),
-            )
+            await show_combined_view(query, user_id)
             return ConversationHandler.END
 
         move_target = state.get("move_target")
@@ -2064,17 +2056,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state["page"] = 0
         state["view"] = "files"
         await query.answer("✅ Moved!", show_alert=False)
-        await query.edit_message_text(
-            f"✅ <b>Moved successfully</b>\n\n"
-            f"File: <b>{_esc(fname)}</b>\n"
-            f"From: {_esc(old_folder)}\n"
-            f"To:   {_esc(format_breadcrumb(dest_path))}",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-            ]),
-        )
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── move folder: start (from folder info panel) ──────────────────────────
@@ -2192,20 +2174,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["page"] = 0
             state["view"] = "files"
             await query.answer(f"📋 Copied {len(results)} file(s)!", show_alert=False)
-            lines = "\n".join(
-                f"<code>{_esc(o)}</code> → <code>{_esc(n)}</code>" for o, n in results[:15]
-            )
-            if len(results) > 15:
-                lines += f"\n…and {len(results) - 15} more"
-            await query.edit_message_text(
-                f"📋 <b>Copy complete</b> — {len(results)} file(s)\n\n{lines}\n\n"
-                f"In: {_esc(format_breadcrumb(dest_path))}",
-                parse_mode="HTML",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
-                    [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-                ]),
-            )
+            await show_combined_view(query, user_id)
             return ConversationHandler.END
 
         src_id = state.get("copy_source")
@@ -2250,17 +2219,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state["page"] = 0
         state["view"] = "files"
         await query.answer("📋 Copied!", show_alert=False)
-        await query.edit_message_text(
-            f"📋 <b>Copy complete</b>\n\n"
-            f"Original: <code>{_esc(orig_name)}</code>\n"
-            f"Copy: <code>{_esc(new_name)}</code>\n"
-            f"In: {_esc(format_breadcrumb(dest_path))}",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
-                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-            ]),
-        )
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     if data.startswith("set_type:"):
