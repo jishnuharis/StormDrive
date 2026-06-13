@@ -909,7 +909,8 @@ async def show_folder_list(query, user_id: int) -> None:
                 f"📂 View {total_files} file{'s' if total_files != 1 else ''} here",
                 callback_data="action:view_files",
             )])
-        if path != "Root":
+        # Only show rename button when actively browsing folders, not when returning from file list
+        if path != "Root" and state.get("view") == "folders":
             top.append([InlineKeyboardButton("✏️ Rename this folder", callback_data="action:rename_this_folder")])
     elif mode in ("delete",) and total_files:
         top.insert(0, [InlineKeyboardButton(
@@ -1376,6 +1377,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if state["mode"] == "store":
             await show_folder_list(query, user_id)
             return WAIT_STORE_FILE
+        if state["mode"] == "move_file":
+            await show_folder_list(query, user_id)
+            return WAIT_MOVE_FILE_DST
+        if state["mode"] == "move_folder":
+            await show_folder_list(query, user_id)
+            return WAIT_MOVE_DEST
+        if state["mode"] == "copy_file":
+            await show_folder_list(query, user_id)
+            return WAIT_COPY_DST
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
@@ -1422,12 +1432,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await show_folder_list(query, user_id)
             return ConversationHandler.END
 
-        if mode in ("move_file", "move_folder"):
+        if mode in ("move_file", "move_folder", "copy_file"):
             # Navigate further — always show folder list
             state["view"] = "folders"
             await show_folder_list(query, user_id)
             if mode == "move_file":
                 return WAIT_MOVE_FILE_DST
+            if mode == "copy_file":
+                return WAIT_COPY_DST
             return WAIT_MOVE_DEST
 
         # retrieve — show folder info panel first
@@ -1467,6 +1479,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "action:back_folders":
         state["page"] = 0
         state["view"] = "folders"
+        # Go up to parent folder
+        current = normalize_path(state.get("path", "Root"))
+        if "/" in current:
+            state["path"] = current.rsplit("/", 1)[0]
+        else:
+            state["path"] = "Root"
         if state["mode"] == "store":
             await show_folder_list(query, user_id)
             return WAIT_STORE_FILE
@@ -1476,6 +1494,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if state["mode"] == "move_folder":
             await show_folder_list(query, user_id)
             return WAIT_MOVE_DEST
+        if state["mode"] == "copy_file":
+            await show_folder_list(query, user_id)
+            return WAIT_COPY_DST
         await show_folder_list(query, user_id)
         return ConversationHandler.END
 
