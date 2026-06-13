@@ -212,6 +212,26 @@ def _copy_name(db: dict, base_name: str, file_type: str, folder: str) -> str:
     return f"{base_name} ({count})"
 
 
+def _unique_copy_name(db: dict, base_name: str, file_type: str, dest_path: str) -> str:
+    """
+    Return a filename safe to use in dest_path: if base_name (same type) doesn't
+    already exist there, keep it as-is; otherwise append ' (n)' with the next
+    free number, regardless of whether dest_path is the source folder or not.
+    """
+    dest_path = normalize_path(dest_path)
+    existing = {
+        v.get("filename", "")
+        for v in db.values()
+        if normalize_path(v.get("folder", "Root")) == dest_path and v.get("type") == file_type
+    }
+    if base_name not in existing:
+        return base_name
+    n = 1
+    while f"{base_name} ({n})" in existing:
+        n += 1
+    return f"{base_name} ({n})"
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -613,6 +633,9 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
         "copy_source": None,
         "search_items": None,
         "sort_order": sort_order,  # preserved on mode change
+        "multiselect": False,
+        "selected_files": set(),
+        "copy_sources": None,
     }
 
 
@@ -887,7 +910,12 @@ async def show_folder_list(query, user_id: int) -> None:
                 f"📂 Move '{_esc(fname[:20])}' here", callback_data="action:move_here"
             )])
     elif mode == "copy_file":
-        if state.get("copy_source") is not None:
+        if state.get("copy_sources"):
+            n = len(state["copy_sources"])
+            top.append([InlineKeyboardButton(
+                f"📋 Copy {n} file(s) here", callback_data="action:copy_here"
+            )])
+        elif state.get("copy_source") is not None:
             db2 = load_db()
             fitem = db2.get(str(state["copy_source"]), {})
             fname = fitem.get("filename", "file")
@@ -1078,31 +1106,53 @@ async def show_combined_view(query, user_id: int) -> None:
 
     else:
         # retrieve — sort toggle + combined view
+        multiselect = state.get("multiselect", False)
+        selected = state.get("selected_files") or set()
         sort_row = [InlineKeyboardButton(
             f"Sort: {_sort_label[sort_order]}",
             callback_data=f"sort:{_next_sort[sort_order]}"
         )]
         folder_items = [(f"📁 {name}", f"cd:{name}") for name in subfolders]
-        file_items = [
-            (f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type', 'other'))} {f['filename']}",
-             f"file_action:{f['message_id']}")
-            for f in files
-        ]
+        if multiselect:
+            select_row = [InlineKeyboardButton("✖ Exit select mode", callback_data="action:multiselect_off")]
+            file_items = [
+                (f"{'✅' if f['message_id'] in selected else '⬜'} "
+                 f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type', 'other'))} {f['filename']}",
+                 f"toggle_sel:{f['message_id']}")
+                for f in files
+            ]
+        else:
+            select_row = [InlineKeyboardButton("☑️ Select files", callback_data="action:multiselect_on")] if files else []
+            file_items = [
+                (f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type', 'other'))} {f['filename']}",
+                 f"file_action:{f['message_id']}")
+                for f in files
+            ]
         all_items = folder_items + file_items
-        top_rows = [back_row]
-        if len(files) > 1:
-            top_rows.insert(0, sort_row)
+        top_rows = []
+        if select_row:
+            top_rows.append(select_row)
+        if not multiselect and len(files) > 1:
+            top_rows.append(sort_row)
+        top_rows.append(back_row)
+        bottom_rows = []
+        if multiselect:
+            bottom_rows.append([InlineKeyboardButton(
+                f"✅ Done ({len(selected)} selected)", callback_data="action:multi_done"
+            )])
+        bottom_rows.append(menu_row)
         kb = build_paginated_keyboard(
             all_items, page,
             extra_top_rows=top_rows,
-            extra_bottom_rows=[menu_row]
+            extra_bottom_rows=bottom_rows
         )
         parts = []
         if subfolders:
             parts.append(folder_count_label)
         if files:
             parts.append(file_count_label)
-        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b> — {', '.join(parts)}\n\nTap a file for options or enter a subfolder:"
+        suffix = "\n\nTap files to select." if multiselect else "\n\nTap a file for options or enter a subfolder:"
+        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b> — {', '.join(parts)}{suffix}"
 
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -1171,7 +1221,44 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
     return ConversationHandler.END
 
 
-async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
+async def show_multi_action_panel(query, user_id: int) -> int:
+    """Action card for a multi-selected set of files: retrieve, favourite, copy, delete."""
+    state = user_state.setdefault(user_id, _fresh_state())
+    db = load_db()
+    selected = state.get("selected_files") or set()
+    items = [db.get(str(mid)) for mid in selected]
+    items = [i for i in items if i]
+    if not items:
+        await query.answer("⚠️ No files selected.", show_alert=True)
+        state["multiselect"] = False
+        state["selected_files"] = set()
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
+    names = "\n".join(
+        f"{'⭐' if i.get('favourite') else file_type_emoji(i.get('type', 'other'))} {_esc(i.get('filename', ''))}"
+        for i in items[:15]
+    )
+    if len(items) > 15:
+        names += f"\n…and {len(items) - 15} more"
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📤 Retrieve all ({len(items)})", callback_data="action:multi_retrieve")],
+        [InlineKeyboardButton("⭐ Favourite / ☆ Unfavourite", callback_data="action:multi_fav")],
+        [InlineKeyboardButton("📋 Copy", callback_data="action:multi_copy")],
+        [InlineKeyboardButton("🗑 Delete", callback_data="action:multi_delete")],
+        [InlineKeyboardButton("◀ Back", callback_data="action:multi_back"),
+         InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
+    ])
+    await query.edit_message_text(
+        f"☑️ <b>{len(items)} file(s) selected</b>\n\n{names}",
+        parse_mode="HTML",
+        reply_markup=kb,
+    )
+    return ConversationHandler.END
+
+
+
     """Folder info card: file count, subfolder count, newest file, actions."""
     state = user_state.get(user_id, {})
     # NOTE: the cd: handler already advanced state["path"] to this folder's
@@ -1557,6 +1644,126 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         msg_id = int(data.split(":", 1)[1])
         return await show_file_action_panel(query, user_id, msg_id)
 
+    # ── multiselect: enter / exit ─────────────────────────────────────────────
+    if data == "action:multiselect_on":
+        state["multiselect"] = True
+        state["selected_files"] = set()
+        state["page"] = 0
+        state["view"] = "files"
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
+    if data == "action:multiselect_off":
+        state["multiselect"] = False
+        state["selected_files"] = set()
+        state["view"] = "files"
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
+    # ── multiselect: toggle a file ────────────────────────────────────────────
+    if data.startswith("toggle_sel:"):
+        msg_id = int(data.split(":", 1)[1])
+        selected = state.setdefault("selected_files", set())
+        if msg_id in selected:
+            selected.discard(msg_id)
+        else:
+            selected.add(msg_id)
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
+    # ── multiselect: done → action panel ──────────────────────────────────────
+    if data == "action:multi_done":
+        if not (state.get("selected_files") or set()):
+            await query.answer("⚠️ No files selected.", show_alert=True)
+            return ConversationHandler.END
+        return await show_multi_action_panel(query, user_id)
+
+    # ── multiselect: back to folder (keep selection) ──────────────────────────
+    if data == "action:multi_back":
+        state["view"] = "files"
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
+    # ── multiselect: retrieve all ─────────────────────────────────────────────
+    if data == "action:multi_retrieve":
+        selected = state.get("selected_files") or set()
+        sent = 0
+        for msg_id in selected:
+            try:
+                await context.bot.copy_message(
+                    chat_id=query.message.chat.id,
+                    from_chat_id=ARCHIVE_CHAT_ID,
+                    message_id=msg_id,
+                )
+                sent += 1
+            except Exception:
+                pass
+        await query.answer(f"📤 Sent {sent} file(s).", show_alert=False)
+        return await show_multi_action_panel(query, user_id)
+
+    # ── multiselect: favourite / unfavourite all ──────────────────────────────
+    if data == "action:multi_fav":
+        selected = state.get("selected_files") or set()
+        db = load_db()
+        items = [db.get(str(mid)) for mid in selected]
+        items = [i for i in items if i]
+        all_fav = all(i.get("favourite") for i in items) if items else False
+        new_val = not all_fav
+        for i in items:
+            i["favourite"] = new_val
+        save_db(db)
+        await query.answer("⭐ Marked as favourite." if new_val else "☆ Removed from favourites.", show_alert=False)
+        return await show_multi_action_panel(query, user_id)
+
+    # ── multiselect: delete all (confirm) ─────────────────────────────────────
+    if data == "action:multi_delete":
+        selected = state.get("selected_files") or set()
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ Yes, delete {len(selected)} file(s)", callback_data="action:multi_delete_confirm")],
+            [InlineKeyboardButton("❌ Cancel", callback_data="action:multi_done")],
+        ])
+        await query.edit_message_text(
+            f"🗑 Delete <b>{len(selected)}</b> selected file(s)?\n\nThis cannot be undone.",
+            parse_mode="HTML", reply_markup=kb,
+        )
+        return ConversationHandler.END
+
+    if data == "action:multi_delete_confirm":
+        selected = state.get("selected_files") or set()
+        db = load_db()
+        deleted = 0
+        for msg_id in list(selected):
+            item = db.pop(str(msg_id), None)
+            if item:
+                deleted += 1
+                try:
+                    await context.bot.delete_message(ARCHIVE_CHAT_ID, msg_id)
+                except Exception:
+                    pass
+        save_db(db)
+        await query.answer(f"✅ Deleted {deleted} file(s).", show_alert=False)
+        state["multiselect"] = False
+        state["selected_files"] = set()
+        state["page"] = 0
+        state["view"] = "files"
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
+    # ── multiselect: copy all → pick destination ──────────────────────────────
+    if data == "action:multi_copy":
+        selected = state.get("selected_files") or set()
+        if not selected:
+            await query.answer("⚠️ No files selected.", show_alert=True)
+            return ConversationHandler.END
+        state["copy_sources"] = list(selected)
+        state["copy_source"] = None
+        state["mode"] = "copy_file"
+        state["path"] = "Root"
+        state["page"] = 0
+        state["view"] = "folders"
+        await show_folder_list(query, user_id)
+        return WAIT_COPY_DST
+
     # ── retrieve file ─────────────────────────────────────────────────────────
     if data.startswith("do_retrieve:"):
         msg_id = int(data.split(":", 1)[1])
@@ -1759,6 +1966,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         save_db(db)
         state["move_target"] = None
         state["mode"] = "retrieve"
+        state["path"] = parent_path(dest_path)
+        state["page"] = 0
+        state["view"] = "files"
         await query.answer("✅ Moved!", show_alert=False)
         await query.edit_message_text(
             f"✅ <b>Moved successfully</b>\n\n"
@@ -1766,9 +1976,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"From: {_esc(old_folder)}\n"
             f"To:   {_esc(format_breadcrumb(dest_path))}",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]]
-            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
+            ]),
         )
         return ConversationHandler.END
 
@@ -1834,6 +2045,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⚠️ File not found.", show_alert=True)
             return ConversationHandler.END
         state["copy_source"] = msg_id
+        state["copy_sources"] = None
         state["mode"] = "copy_file"
         state["path"] = "Root"
         state["page"] = 0
@@ -1843,11 +2055,67 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── copy file: drop here ──────────────────────────────────────────────────
     if data == "action:copy_here":
+        dest_path = normalize_path(state.get("path", "Root"))
+        copy_sources = state.get("copy_sources")
+
+        if copy_sources:
+            db = load_db()
+            results = []
+            for src_id in copy_sources:
+                src_item = db.get(str(src_id))
+                if not src_item:
+                    continue
+                try:
+                    copied = await context.bot.copy_message(
+                        chat_id=ARCHIVE_CHAT_ID,
+                        from_chat_id=ARCHIVE_CHAT_ID,
+                        message_id=src_id,
+                    )
+                except Exception:
+                    continue
+                orig_name = src_item.get("filename", f"file_{src_id}")
+                file_type = src_item.get("type", "other")
+                new_name = _unique_copy_name(db, orig_name, file_type, dest_path)
+                db[str(copied.message_id)] = {
+                    "filename": new_name,
+                    "folder": dest_path,
+                    "message_id": copied.message_id,
+                    "type": file_type,
+                    "file_size": src_item.get("file_size"),
+                    "stored_at": _now_iso(),
+                    "favourite": False,
+                }
+                results.append((orig_name, new_name))
+            save_db(db)
+            state["copy_sources"] = None
+            state["copy_source"] = None
+            state["mode"] = "retrieve"
+            state["multiselect"] = False
+            state["selected_files"] = set()
+            state["path"] = parent_path(dest_path)
+            state["page"] = 0
+            state["view"] = "files"
+            await query.answer(f"📋 Copied {len(results)} file(s)!", show_alert=False)
+            lines = "\n".join(
+                f"<code>{_esc(o)}</code> → <code>{_esc(n)}</code>" for o, n in results[:15]
+            )
+            if len(results) > 15:
+                lines += f"\n…and {len(results) - 15} more"
+            await query.edit_message_text(
+                f"📋 <b>Copy complete</b> — {len(results)} file(s)\n\n{lines}\n\n"
+                f"In: {_esc(format_breadcrumb(dest_path))}",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
+                ]),
+            )
+            return ConversationHandler.END
+
         src_id = state.get("copy_source")
         if not src_id:
             await query.answer("⚠️ No file selected.", show_alert=True)
             return ConversationHandler.END
-        dest_path = normalize_path(state.get("path", "Root"))
         db = load_db()
         src_item = db.get(str(src_id))
         if not src_item:
@@ -1863,14 +2131,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception as e:
             await query.answer(f"⚠️ Copy failed: {e}", show_alert=True)
             return ConversationHandler.END
-        src_folder = normalize_path(src_item.get("folder", "Root"))
         orig_name = src_item.get("filename", f"file_{src_id}")
         file_type = src_item.get("type", "other")
-        # Same folder → auto-number name; different folder → keep original name
-        if dest_path == src_folder:
-            new_name = _copy_name(db, orig_name, file_type, dest_path)
-        else:
-            new_name = orig_name
+        # Always check for a name collision in the destination folder,
+        # whether it's the source folder or a different one.
+        new_name = _unique_copy_name(db, orig_name, file_type, dest_path)
         db[str(copied.message_id)] = {
             "filename": new_name,
             "folder": dest_path,
@@ -1883,6 +2148,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         save_db(db)
         state["copy_source"] = None
         state["mode"] = "retrieve"
+        state["path"] = parent_path(dest_path)
+        state["page"] = 0
+        state["view"] = "files"
         await query.answer("📋 Copied!", show_alert=False)
         await query.edit_message_text(
             f"📋 <b>Copy complete</b>\n\n"
