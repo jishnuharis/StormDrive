@@ -1259,6 +1259,7 @@ async def show_multi_action_panel(query, user_id: int) -> int:
 
 
 
+async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     """Folder info card: file count, subfolder count, newest file, actions."""
     state = user_state.get(user_id, {})
     # NOTE: the cd: handler already advanced state["path"] to this folder's
