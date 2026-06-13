@@ -1088,9 +1088,12 @@ async def show_combined_view(query, user_id: int) -> None:
             for f in files
         ]
         all_items = folder_items + file_items
+        top_rows = [back_row]
+        if len(files) > 1:
+            top_rows.insert(0, sort_row)
         kb = build_paginated_keyboard(
             all_items, page,
-            extra_top_rows=[sort_row, back_row],
+            extra_top_rows=top_rows,
             extra_bottom_rows=[menu_row]
         )
         parts = []
@@ -1344,7 +1347,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("mode:"):
         mode = data.split(":", 1)[1]
         user_state[user_id] = _inherit_state(user_id, mode)
-        await show_folder_list(query, user_id)
+        if mode == "retrieve":
+            await show_combined_view(query, user_id)
+        else:
+            await show_folder_list(query, user_id)
         return ConversationHandler.END
 
     # ── pagination ────────────────────────────────────────────────────────────
