@@ -991,7 +991,7 @@ async def show_folder_list(query, user_id: int) -> None:
     }
 
     if not children:
-        text = header + no_child_suffixes.get(mode, "") + _MSG_PAD
+        text = header + no_child_suffixes.get(mode, "") + "\n\n<i>No folders to browse</i>" + _MSG_PAD
         await query.edit_message_text(
             text, parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(top),
@@ -1051,7 +1051,7 @@ async def show_combined_view(query, user_id: int) -> None:
             )])
         extra.append(menu_row)
         await query.edit_message_text(
-            f"📂 <b>{_esc(format_breadcrumb(path))}</b> — empty folder.{_MSG_PAD}",
+            f"📂 <b>{_esc(format_breadcrumb(path))}</b>\n\n<i>This folder is empty</i>\n\nStore files here or navigate back{_MSG_PAD}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(extra),
         )
@@ -1175,8 +1175,8 @@ async def show_combined_view(query, user_id: int) -> None:
             parts.append(folder_count_label)
         if files:
             parts.append(file_count_label)
-        suffix = "\n\nTap files to select." if multiselect else "\n\nTap a file for options or enter a subfolder:"
-        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b> — {', '.join(parts)}{suffix}{_MSG_PAD}"
+        suffix = "\n\n🔵 Tap files to select." if multiselect else "\n\n👆 Tap a file or folder below"
+        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b>\n\n{', '.join(parts) if parts else 'Empty folder'}{suffix}{_MSG_PAD}"
 
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -1236,9 +1236,10 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
     ])
     await query.edit_message_text(
         f"{emoji} <b>{_esc(fname)}</b>\n\n"
-        f"📁 Folder: {_esc(folder)}\n"
-        f"🗓 Stored: <code>{_esc(stored)}</code>\n"
-        f"{'⭐ Favourite' if fav else ''}{_MSG_PAD}",
+        f"📁 Location: {_esc(folder)}\n"
+        f"🗓 Stored: {_esc(stored)}\n"
+        f"{'⭐ Marked favourite' if fav else '☆ Not marked'}\n\n"
+        f"<i>Choose an action below</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1276,7 +1277,7 @@ async def show_multi_action_panel(query, user_id: int) -> int:
          InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
-        f"☑️ <b>{len(items)} file(s) selected</b>\n\n{names}{_MSG_PAD}",
+        f"☑️ <b>{len(items)} file(s) selected</b>\n\n<b>Selected:</b>\n{names}\n\n<i>Choose action below</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1315,10 +1316,11 @@ async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     ])
     await query.edit_message_text(
         f"📁 <b>{_esc(format_breadcrumb(full_path))}</b>\n\n"
-        f"Files here: <b>{direct_files}</b>\n"
-        f"Total in tree: <b>{tree_files}</b>\n"
-        f"Subfolders: <b>{sub_count}</b>\n"
-        f"Newest file: <code>{newest}</code>{_MSG_PAD}",
+        f"📊 <b>Statistics</b>\n"
+        f"  Files here: {direct_files} | Total: {tree_files}\n"
+        f"  Subfolders: {sub_count}\n"
+        f"  Latest: {newest}\n\n"
+        f"<i>Use buttons below to manage this folder</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -2233,7 +2235,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ]
         type_buttons.append([InlineKeyboardButton("◀ Back", callback_data=f"file_action:{msg_id}")])
         await query.edit_message_text(
-            f"✏️ <b>Set File Type</b>\n\nChoose the correct type for this file:{_MSG_PAD}",
+            f"✏️ <b>Set File Type</b>\n\nSelect the correct category for this file:\n\n<i>This helps organize and sort your files</i>{_MSG_PAD}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(type_buttons),
         )
