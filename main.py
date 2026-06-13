@@ -1995,10 +1995,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⚠️ File not found.", show_alert=True)
             return ConversationHandler.END
         fname = item.get("filename", f"ID {msg_id}")
+        src_folder = normalize_path(item.get("folder", "Root"))
         state["move_target"] = msg_id
         state["move_targets"] = None
         state["mode"] = "move_file"
-        state["path"] = "Root"
+        state["path"] = parent_path(src_folder)
         state["page"] = 0
         state["view"] = "folders"
         await show_folder_list(query, user_id)
@@ -2120,10 +2121,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not item:
             await query.answer("⚠️ File not found.", show_alert=True)
             return ConversationHandler.END
+        src_folder = normalize_path(item.get("folder", "Root"))
         state["copy_source"] = msg_id
         state["copy_sources"] = None
         state["mode"] = "copy_file"
-        state["path"] = "Root"
+        state["path"] = parent_path(src_folder)
         state["page"] = 0
         state["view"] = "folders"
         await show_folder_list(query, user_id)
