@@ -965,31 +965,21 @@ async def show_folder_list(query, user_id: int) -> None:
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-async def show_files_in_folder(query, user_id: int) -> None:
+async def show_combined_view(query, user_id: int) -> None:
+    """Unified folder view: subfolders on top, files below, all paginated together."""
     db = load_db()
     state = user_state.setdefault(user_id, _fresh_state())
     state["view"] = "files"
     path = normalize_path(state.get("path", "Root"))
     page = state.get("page", 0)
     mode = state["mode"]
-    files = get_files_in_folder(db, path)
-
     sort_order = state.get("sort_order", "newest")
 
-    # Favourites always float to the top
-    def _sort_key(f: dict):
-        fav = 0 if f.get("favourite") else 1
-        if sort_order == "oldest":
-            return (fav, f.get("stored_at", ""))
-        elif sort_order == "alpha":
-            return (fav, f.get("filename", "").lower())
-        else:  # newest
-            return (fav, -(ord(f.get("stored_at", " ")[0]) if f.get("stored_at") else 0))
+    subfolders = get_subfolders_for_path(db, path)
+    files = get_files_in_folder(db, path)
 
+    # Sort files only — subfolders always stay on top
     if sort_order == "newest":
-        files.sort(key=lambda f: (0 if f.get("favourite") else 1, f.get("stored_at", "")), reverse=True)
-        # re-sort so favourites float even in reverse
-        files.sort(key=lambda f: (0 if f.get("favourite") else 1,))
         files_fav = [f for f in files if f.get("favourite")]
         files_rest = [f for f in files if not f.get("favourite")]
         files_rest.sort(key=lambda f: f.get("stored_at", ""), reverse=True)
@@ -1008,10 +998,14 @@ async def show_files_in_folder(query, user_id: int) -> None:
     _next_sort = {"newest": "oldest", "oldest": "alpha", "alpha": "newest"}
     _sort_label = {"newest": "🕐 Newest", "oldest": "🕑 Oldest", "alpha": "🔤 A→Z"}
 
-    back_row = [InlineKeyboardButton("◀ Back to Folders", callback_data="action:back_folders")]
+    back_row = [InlineKeyboardButton("◀ Back", callback_data="action:back_folders")]
     menu_row = [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]
 
-    if not files:
+    folder_label_fn = lambda name: (f"📁 {name}", f"cd:{name}")
+    file_count_label = f"{len(files)} file{'s' if len(files) != 1 else ''}"
+    folder_count_label = f"{len(subfolders)} subfolder{'s' if len(subfolders) != 1 else ''}"
+
+    if not subfolders and not files:
         extra: list[list] = [back_row]
         if mode == "delete":
             extra.append([InlineKeyboardButton(
@@ -1019,86 +1013,93 @@ async def show_files_in_folder(query, user_id: int) -> None:
             )])
         extra.append(menu_row)
         await query.edit_message_text(
-            f"📂 <b>{_esc(format_breadcrumb(path))}</b> — no files here.",
+            f"📂 <b>{_esc(format_breadcrumb(path))}</b> — empty folder.",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(extra),
         )
         return
 
-    count_label = f"{len(files)} file{'s' if len(files) != 1 else ''}"
-
     if mode == "delete":
-        bot_ = [
-            [InlineKeyboardButton(
-                f"🗑 Delete entire folder ({count_label})",
-                callback_data="action:delete_this_folder",
-            )],
-            menu_row,
-        ]
-        items = [
-            (f"🗑 {file_type_emoji(f.get('type', 'document'))} {f['filename']}",
+        folder_items = [(f"📁 {name}", f"cd:{name}") for name in subfolders]
+        file_items = [
+            (f"🗑 {file_type_emoji(f.get('type', 'other'))} {f['filename']}",
              f"del_file:{f['message_id']}")
             for f in files
         ]
-        kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=bot_)
-        text = f"🗑 <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file to delete it:"
+        all_items = folder_items + file_items
+        top_rows = [back_row]
+        if files:
+            top_rows.insert(0, [InlineKeyboardButton(
+                f"🗑 Delete entire folder ({file_count_label})",
+                callback_data="action:delete_this_folder",
+            )])
+        kb = build_paginated_keyboard(all_items, page, extra_top_rows=top_rows, extra_bottom_rows=[menu_row])
+        text = f"🗑 <b>{_esc(format_breadcrumb(path))}</b>\n\nTap a file to delete or enter a subfolder:"
 
     elif mode == "rename":
-        items = [
-            (f"✏️ {file_type_emoji(f.get('type', 'document'))} {f['filename']}",
+        folder_items = [(f"📁 {name}", f"cd:{name}") for name in subfolders]
+        file_items = [
+            (f"✏️ {file_type_emoji(f.get('type', 'other'))} {f['filename']}",
              f"rename_file:{f['message_id']}")
             for f in files
         ]
-        kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
-        text = f"✏️ <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file to rename it:"
+        all_items = folder_items + file_items
+        kb = build_paginated_keyboard(all_items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
+        text = f"✏️ <b>{_esc(format_breadcrumb(path))}</b>\n\nTap a file to rename or enter a subfolder:"
 
     elif mode == "move_file":
         move_target = state.get("move_target")
+        folder_items = [(f"📁 {name}", f"cd:{name}") for name in subfolders]
         if move_target is None:
-            # Step 1: pick the file
-            items = [
-                (f"🔀 {file_type_emoji(f.get('type', 'document'))} {f['filename']}",
+            file_items = [
+                (f"🔀 {file_type_emoji(f.get('type', 'other'))} {f['filename']}",
                  f"pick_move_file:{f['message_id']}")
                 for f in files
             ]
-            kb = build_paginated_keyboard(items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
-            text = f"🔀 <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file to move:"
+            all_items = folder_items + file_items
+            kb = build_paginated_keyboard(all_items, page, extra_top_rows=[back_row], extra_bottom_rows=[menu_row])
+            text = f"🔀 <b>{_esc(format_breadcrumb(path))}</b>\n\nTap a file to move:"
         else:
             db2 = load_db()
             fitem = db2.get(str(move_target), {})
             fname = fitem.get("filename", f"ID {move_target}")
+            file_items = [(f"{file_type_emoji(f.get('type', 'other'))} {f['filename']}", "noop") for f in files]
+            all_items = folder_items + file_items
             top_rows = [
                 [InlineKeyboardButton(f"📂 Move '{_esc(fname[:20])}' here", callback_data="action:move_here")],
                 back_row,
             ]
-            items = [
-                (f"{file_type_emoji(f.get('type', 'document'))} {f['filename']}", "noop")
-                for f in files
-            ]
-            kb = build_paginated_keyboard(items, page, extra_top_rows=top_rows, extra_bottom_rows=[menu_row])
+            kb = build_paginated_keyboard(all_items, page, extra_top_rows=top_rows, extra_bottom_rows=[menu_row])
             text = (
                 f"🔀 Moving: <b>{_esc(fname)}</b>\n\n"
                 f"Destination: <b>{_esc(format_breadcrumb(path))}</b>\n\n"
-                "Tap 'Move here' to confirm, or navigate to a different folder:"
+                "Tap 'Move here' to confirm, or navigate to a subfolder:"
             )
 
     else:
-        # retrieve — sort toggle
+        # retrieve — sort toggle + combined view
         sort_row = [InlineKeyboardButton(
             f"Sort: {_sort_label[sort_order]}",
             callback_data=f"sort:{_next_sort[sort_order]}"
         )]
-        items = [
-            (f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type', 'document'))} {f['filename']}",
+        folder_items = [(f"📁 {name}", f"cd:{name}") for name in subfolders]
+        file_items = [
+            (f"{'⭐' if f.get('favourite') else file_type_emoji(f.get('type', 'other'))} {f['filename']}",
              f"file_action:{f['message_id']}")
             for f in files
         ]
+        all_items = folder_items + file_items
         kb = build_paginated_keyboard(
-            items, page,
+            all_items, page,
             extra_top_rows=[sort_row, back_row],
             extra_bottom_rows=[menu_row]
         )
-        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b> — {count_label}\n\nTap a file for options:"
+        parts = []
+        if subfolders:
+            parts.append(folder_count_label)
+        if files:
+            parts.append(file_count_label)
+        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b> — {', '.join(parts)}\n\nTap a file for options or enter a subfolder:"
 
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -1189,7 +1190,7 @@ async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     newest = max(tree_items_dated, key=lambda x: x["stored_at"])["stored_at"][:10] if tree_items_dated else "—"
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📂 Browse files", callback_data="action:enter_folder_files"),
+        [InlineKeyboardButton("📂 Browse folder", callback_data="action:enter_folder_files"),
          InlineKeyboardButton("✏️ Rename", callback_data="action:rename_this_folder")],
         [InlineKeyboardButton("📁 Move folder", callback_data="action:start_move_this_folder"),
          InlineKeyboardButton("🗑 Delete tree", callback_data="action:ask_del_tree")],
@@ -1232,7 +1233,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("sort:"):
         state["sort_order"] = data.split(":", 1)[1]
         state["page"] = 0
-        await show_files_in_folder(query, user_id)
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── main menu ─────────────────────────────────────────────────────────────
@@ -1351,7 +1352,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data.startswith("page:"):
         state["page"] = int(data.split(":", 1)[1])
         if state.get("view") == "files":
-            await show_files_in_folder(query, user_id)
+            await show_combined_view(query, user_id)
         elif state.get("view") == "search":
             items = state.get("search_items") or []
             kb = build_paginated_keyboard(
@@ -1449,14 +1450,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "action:enter_folder_files":
         state["page"] = 0
         state["view"] = "files"
-        await show_files_in_folder(query, user_id)
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── view files ────────────────────────────────────────────────────────────
     if data == "action:view_files":
         state["view"] = "files"
         state["page"] = 0
-        await show_files_in_folder(query, user_id)
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── store here ────────────────────────────────────────────────────────────
@@ -1504,7 +1505,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "action:back_files":
         state["page"] = 0
         state["view"] = "files"
-        await show_files_in_folder(query, user_id)
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── back to search results ────────────────────────────────────────────────
@@ -1576,7 +1577,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "action:open_del_folder":
         state["page"] = 0
         state["view"] = "files"
-        await show_files_in_folder(query, user_id)
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     if data in ("action:ask_del_tree", "action:delete_this_folder"):
@@ -1643,7 +1644,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer(f"✅ '{fname}' deleted.", show_alert=False)
         state["page"] = 0
         state["view"] = "files"
-        await show_files_in_folder(query, user_id)
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── rename file ───────────────────────────────────────────────────────────
