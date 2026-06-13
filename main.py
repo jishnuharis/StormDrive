@@ -1985,9 +1985,15 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_type = "document"
         try:
             import magic as _magic
+            import httpx
             tg_file = await context.bot.get_file(message.document.file_id)
-            file_bytes = await tg_file.download_as_bytearray()
-            mime = _magic.from_buffer(bytes(file_bytes[:1024]), mime=True)
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    tg_file.file_path,
+                    headers={"Range": "bytes=0-1023"},
+                    timeout=10,
+                )
+            mime = _magic.from_buffer(bytes(resp.content), mime=True)
             detected = _mime_to_type(mime)
             if detected:
                 file_type = detected
@@ -2265,11 +2271,16 @@ async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     for i, (key, item) in enumerate(targets, 1):
         try:
-            tg_file = await bot.get_file(
-                await _resolve_file_id(bot, item)
-            )
-            file_bytes = await tg_file.download_as_bytearray()
-            mime = _magic.from_buffer(bytes(file_bytes[:1024]), mime=True)
+            tg_file = await bot.get_file(await _resolve_file_id(bot, item))
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    tg_file.file_path,
+                    headers={"Range": "bytes=0-1023"},
+                    timeout=10,
+                )
+            file_bytes = resp.content
+            mime = _magic.from_buffer(bytes(file_bytes), mime=True)
             detected = _mime_to_type(mime)
             if detected and detected != "document":
                 item["type"] = detected
