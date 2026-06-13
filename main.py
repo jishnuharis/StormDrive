@@ -916,6 +916,7 @@ async def show_folder_list(query, user_id: int) -> None:
             top.append([InlineKeyboardButton(
                 f"📂 Move '{_esc(fname[:20])}' here", callback_data="action:move_here"
             )])
+        top.append([InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")])
     elif mode == "copy_file":
         if state.get("copy_sources"):
             n = len(state["copy_sources"])
@@ -929,6 +930,7 @@ async def show_folder_list(query, user_id: int) -> None:
             top.append([InlineKeyboardButton(
                 f"📋 Copy '{_esc(fname[:20])}' here", callback_data="action:copy_here"
             )])
+        top.append([InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")])
     elif mode == "move_folder":
         mfp = state.get("move_folder_path")
         if mfp:
@@ -1643,6 +1645,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_combined_view(query, user_id)
         return ConversationHandler.END
 
+    # ── go back to source folder parent (after copy/move) ────────────────────
+    if data == "action:back_source":
+        state["page"] = 0
+        state["view"] = "files"
+        # state["path"] is already set to parent_path(src_folder_path)
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
     # ── back to search results ────────────────────────────────────────────────
     if data == "action:back_search":
         items = state.get("search_items") or []
@@ -2002,14 +2012,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if move_targets:
             db = load_db()
             moved = 0
-            first_src_folder = None
             for msg_id in move_targets:
                 item = db.get(str(msg_id))
                 if not item:
                     continue
-                src_folder = normalize_path(item.get("folder", "Root"))
-                if first_src_folder is None:
-                    first_src_folder = src_folder
                 item["folder"] = dest_path
                 moved += 1
             save_db(db)
@@ -2018,7 +2024,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["mode"] = "retrieve"
             state["multiselect"] = False
             state["selected_files"] = set()
-            state["path"] = parent_path(first_src_folder or "Root")
+            # For multi-move: return to destination (all files are there now)
+            state["path"] = dest_path
             state["last_paste_dest"] = dest_path
             state["page"] = 0
             state["view"] = "files"
@@ -2028,7 +2035,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"To: {_esc(format_breadcrumb(dest_path))}",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
+                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
                     [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
                 ]),
             )
@@ -2064,7 +2071,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"To:   {_esc(format_breadcrumb(dest_path))}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
+                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ]),
         )
@@ -2179,9 +2186,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["mode"] = "retrieve"
             state["multiselect"] = False
             state["selected_files"] = set()
-            first_src = db.get(str(copy_sources[0])) if copy_sources else None
-            src_folder_path = normalize_path((first_src or {}).get("folder", "Root"))
-            state["path"] = parent_path(src_folder_path)
+            # For multi-copy: return to destination (all copies are there now)
+            state["path"] = dest_path
             state["last_paste_dest"] = dest_path
             state["page"] = 0
             state["view"] = "files"
@@ -2196,7 +2202,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"In: {_esc(format_breadcrumb(dest_path))}",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
+                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
                     [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
                 ]),
             )
@@ -2251,7 +2257,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"In: {_esc(format_breadcrumb(dest_path))}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
+                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_source")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ]),
         )
