@@ -83,11 +83,12 @@ WAIT_RENAME_FOLDER = 4
 WAIT_SEARCH_INPUT = 5
 WAIT_MOVE_DEST = 6  # navigating to folder-move destination
 WAIT_MOVE_FILE_DST = 7  # navigating to file-move destination
+WAIT_COPY_DST = 8  # navigating to copy destination
 
 # ---------------------------------------------------------------------------
 # In-memory user state
 # user_state[uid] = {
-#   mode               : "store"|"retrieve"|"delete"|"rename"|"move_file"|"move_folder"
+#   mode               : "store"|"retrieve"|"delete"|"rename"|"move_file"|"move_folder"|"copy_file"
 #   path               : str
 #   view               : "folders"|"files"|"search"
 #   page               : int
@@ -194,6 +195,21 @@ def save_db(data: dict) -> None:
 
 def _now_iso() -> str:
     return datetime.now(IST).isoformat(timespec="seconds")
+
+
+def _copy_name(db: dict, base_name: str, file_type: str, folder: str) -> str:
+    """
+    Generate a copy name like 'invoice (1)', 'invoice (2)' etc.
+    Counts existing files in the same folder with the same base name and type.
+    """
+    folder = normalize_path(folder)
+    count = sum(
+        1 for v in db.values()
+        if normalize_path(v.get("folder", "Root")) == folder
+        and v.get("type") == file_type
+        and (v.get("filename", "") == base_name or v.get("filename", "").startswith(f"{base_name} ("))
+    )
+    return f"{base_name} ({count})"
 
 
 # ---------------------------------------------------------------------------
@@ -574,7 +590,6 @@ async def set_commands(app: Application) -> None:
         BotCommand("backup", "Download metadata.json as a file"),
         BotCommand("restore", "Reply to a .json file to restore the database"),
         BotCommand("disk", "Show real-time volume disk usage"),
-        BotCommand("reclassify", "Re-detect file types using magic bytes"),
     ])
 
 
@@ -594,6 +609,7 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
         "rename_folder_path": None,
         "move_target": None,
         "move_folder_path": None,
+        "copy_source": None,
         "search_items": None,
         "sort_order": sort_order,  # preserved on mode change
     }
@@ -869,6 +885,14 @@ async def show_folder_list(query, user_id: int) -> None:
             top.append([InlineKeyboardButton(
                 f"📂 Move '{_esc(fname[:20])}' here", callback_data="action:move_here"
             )])
+    elif mode == "copy_file":
+        if state.get("copy_source") is not None:
+            db2 = load_db()
+            fitem = db2.get(str(state["copy_source"]), {})
+            fname = fitem.get("filename", "file")
+            top.append([InlineKeyboardButton(
+                f"📋 Copy '{_esc(fname[:20])}' here", callback_data="action:copy_here"
+            )])
     elif mode == "move_folder":
         mfp = state.get("move_folder_path")
         if mfp:
@@ -904,6 +928,7 @@ async def show_folder_list(query, user_id: int) -> None:
         "rename": f"✏️ <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
         "move_file": f"🔀 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
         "move_folder": f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
+        "copy_file": f"📋 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}",
     }
     header = mode_headers.get(mode, f"📁 <b>{_esc(format_breadcrumb(path))}</b>{_esc(file_info)}")
 
@@ -914,6 +939,7 @@ async def show_folder_list(query, user_id: int) -> None:
         "rename": "\n\nEnter a subfolder to rename its contents, or tap ✏️ to rename the current folder:",
         "move_file": "\n\nNavigate to the destination folder:",
         "move_folder": "\n\nNavigate to the new parent folder:",
+        "copy_file": "\n\nNavigate to the destination folder:",
     }
     no_child_suffixes = {
         "store": "\n\nNo subfolders — store here or create one:",
@@ -922,6 +948,7 @@ async def show_folder_list(query, user_id: int) -> None:
         "rename": "\n\nNo subfolders here. Use ✏️ to rename this folder.",
         "move_file": "\n\nNo subfolders — move here or go up.",
         "move_folder": "\n\nNo subfolders — move here or go up.",
+        "copy_file": "\n\nNo subfolders — copy here or go up.",
     }
 
     if not children:
@@ -1122,7 +1149,7 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
          InlineKeyboardButton(fav_btn, callback_data=fav_cb)],
         [InlineKeyboardButton("✏️ Rename", callback_data=f"rename_file:{message_id}"),
          InlineKeyboardButton("✏️ Type", callback_data=f"set_type:{message_id}")],
-        [InlineKeyboardButton("📋 Duplicate", callback_data=f"do_duplicate:{message_id}"),
+        [InlineKeyboardButton("📋 Copy", callback_data=f"pick_copy_file:{message_id}"),
          InlineKeyboardButton("🔀 Move", callback_data=f"pick_move_file:{message_id}")],
         [InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
         [InlineKeyboardButton("◀ Back", callback_data=back_cb),
@@ -1759,13 +1786,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return ConversationHandler.END
 
-    # ── duplicate ─────────────────────────────────────────────────────────────
-    if data.startswith("do_duplicate:"):
-        src_id = int(data.split(":", 1)[1])
+    # ── copy file: pick destination ───────────────────────────────────────────
+    if data.startswith("pick_copy_file:"):
+        msg_id = int(data.split(":", 1)[1])
+        db = load_db()
+        item = db.get(str(msg_id))
+        if not item:
+            await query.answer("⚠️ File not found.", show_alert=True)
+            return ConversationHandler.END
+        state["copy_source"] = msg_id
+        state["mode"] = "copy_file"
+        state["path"] = "Root"
+        state["page"] = 0
+        state["view"] = "folders"
+        await show_folder_list(query, user_id)
+        return WAIT_COPY_DST
+
+    # ── copy file: drop here ──────────────────────────────────────────────────
+    if data == "action:copy_here":
+        src_id = state.get("copy_source")
+        if not src_id:
+            await query.answer("⚠️ No file selected.", show_alert=True)
+            return ConversationHandler.END
+        dest_path = normalize_path(state.get("path", "Root"))
         db = load_db()
         src_item = db.get(str(src_id))
         if not src_item:
-            await query.answer("⚠️ File not found.", show_alert=True)
+            await query.answer("⚠️ File no longer exists.", show_alert=True)
+            state["copy_source"] = None
             return ConversationHandler.END
         try:
             copied = await context.bot.copy_message(
@@ -1774,25 +1822,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 message_id=src_id,
             )
         except Exception as e:
-            await query.answer(f"⚠️ Duplicate failed: {e}", show_alert=True)
+            await query.answer(f"⚠️ Copy failed: {e}", show_alert=True)
             return ConversationHandler.END
+        src_folder = normalize_path(src_item.get("folder", "Root"))
         orig_name = src_item.get("filename", f"file_{src_id}")
-        dup_name = f"Copy of {orig_name}"
+        file_type = src_item.get("type", "other")
+        # Same folder → auto-number name; different folder → keep original name
+        if dest_path == src_folder:
+            new_name = _copy_name(db, orig_name, file_type, dest_path)
+        else:
+            new_name = orig_name
         db[str(copied.message_id)] = {
-            "filename": dup_name,
-            "folder": src_item.get("folder", "Root"),
+            "filename": new_name,
+            "folder": dest_path,
             "message_id": copied.message_id,
-            "type": src_item.get("type", "document"),
+            "type": file_type,
+            "file_size": src_item.get("file_size"),
             "stored_at": _now_iso(),
             "favourite": False,
         }
         save_db(db)
-        await query.answer("📋 Duplicated!", show_alert=False)
+        state["copy_source"] = None
+        state["mode"] = "retrieve"
+        await query.answer("📋 Copied!", show_alert=False)
         await query.edit_message_text(
-            f"📋 <b>Duplicated</b>\n\n"
+            f"📋 <b>Copy complete</b>\n\n"
             f"Original: <code>{_esc(orig_name)}</code>\n"
-            f"Copy: <code>{_esc(dup_name)}</code>\n"
-            f"In: {_esc(format_breadcrumb(src_item.get('folder', 'Root')))}",
+            f"Copy: <code>{_esc(new_name)}</code>\n"
+            f"In: {_esc(format_breadcrumb(dest_path))}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
@@ -2245,129 +2302,6 @@ def _mime_to_type(mime: str) -> str | None:
     if mime.startswith("font/"):
         return "font"
     return None
-
-
-# ---------------------------------------------------------------------------
-# /reclassify — magic-byte reclassification of document-typed files
-# ---------------------------------------------------------------------------
-
-async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not authorized(update):
-        return await deny(update)
-
-    try:
-        import magic as _magic
-    except ImportError as e:
-        import sys
-        await update.message.reply_text(
-            f"⚠️ <code>python-magic</code> import failed.\n"
-            f"Error: <code>{e}</code>\n"
-            f"Python: <code>{sys.executable}</code>\n"
-            f"Path: <code>{sys.path}</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    db = load_db()
-    targets = [(k, v) for k, v in db.items() if v.get("type") == "document"]
-    total = len(targets)
-
-    if total == 0:
-        await update.message.reply_text("✅ No <code>document</code>-typed files to reclassify.", parse_mode="HTML")
-        return
-
-    def _progress_bar(done: int, total: int, width: int = 20) -> str:
-        filled = int(width * done / total)
-        bar = "█" * filled + "░" * (width - filled)
-        return f"[{bar}] {done}/{total}"
-
-    status_msg = await update.message.reply_text(
-        f"🔄 <b>Reclassifying files…</b>\n\n"
-        f"Progress: {_progress_bar(0, total)}",
-        parse_mode="HTML",
-    )
-
-    import time as _time
-    bot = context.bot
-    updated = 0
-    failed = 0
-    failed_reasons: list[str] = []
-    last_edit = _time.time()
-
-    for i, (key, item) in enumerate(targets, 1):
-        try:
-            tg_file = await bot.get_file(await _resolve_file_id(bot, item))
-            import httpx
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    tg_file.file_path,
-                    headers={"Range": "bytes=0-1023"},
-                    timeout=10,
-                )
-            file_bytes = resp.content
-            mime = _magic.from_buffer(bytes(file_bytes), mime=True)
-            detected = _mime_to_type(mime)
-            if detected and detected != "document":
-                item["type"] = detected
-                updated += 1
-        except Exception as e:
-            failed += 1
-            if len(failed_reasons) < 3:
-                failed_reasons.append(f"{item.get('filename', key)}: {e}")
-
-        now = _time.time()
-        if now - last_edit >= 1.0:
-            try:
-                await status_msg.edit_text(
-                    f"🔄 <b>Reclassifying files…</b>\n\n"
-                    f"Progress: {_progress_bar(i, total)}",
-                    parse_mode="HTML",
-                )
-                last_edit = now
-            except Exception:
-                pass
-
-    if updated:
-        save_db(db)
-
-    reasons_text = "\n" + "\n".join(f"• <code>{r}</code>" for r in failed_reasons) if failed_reasons else ""
-    await status_msg.edit_text(
-        f"✅ <b>Reclassification complete!</b>\n\n"
-        f"Processed: <b>{total}</b> files\n"
-        f"Updated: <b>{updated}</b> types changed\n"
-        f"Unchanged: <b>{total - updated - failed}</b>\n"
-        f"Failed: <b>{failed}</b>{reasons_text}",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]]
-        ),
-    )
-
-
-async def _resolve_file_id(bot, item: dict) -> str:
-    """Forward the archived message to get a usable file_id for get_file."""
-    msg_id = int(item["message_id"])
-    fwd = await bot.forward_message(
-        chat_id=OWNER_ID,
-        from_chat_id=ARCHIVE_CHAT_ID,
-        message_id=msg_id,
-        disable_notification=True,
-    )
-    file_id = None
-    for attr in ("document", "video", "audio", "voice", "sticker"):
-        obj = getattr(fwd, attr, None)
-        if obj and getattr(obj, "file_id", None):
-            file_id = obj.file_id
-            break
-    if file_id is None and fwd.photo:
-        file_id = fwd.photo[-1].file_id
-    try:
-        await bot.delete_message(chat_id=OWNER_ID, message_id=fwd.message_id)
-    except Exception:
-        pass
-    if not file_id:
-        raise ValueError("No file_id found")
-    return file_id
 
 
 # ---------------------------------------------------------------------------
@@ -2907,6 +2841,10 @@ conv = ConversationHandler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, move_text_fallback),
             CallbackQueryHandler(button_handler),
         ],
+        WAIT_COPY_DST: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, move_text_fallback),
+            CallbackQueryHandler(button_handler),
+        ],
     },
     fallbacks=[
         CommandHandler("cancel", cancel),
@@ -2924,7 +2862,6 @@ app.add_handler(CommandHandler("joinme", joinme_command))
 app.add_handler(CommandHandler("backup", backup_command))
 app.add_handler(CommandHandler("restore", restore_command))
 app.add_handler(CommandHandler("disk", disk_command))
-app.add_handler(CommandHandler("reclassify", reclassify_command))
 app.add_handler(ChatMemberHandler(protect_archive_group, ChatMemberHandler.CHAT_MEMBER))
 
 if __name__ == "__main__":
