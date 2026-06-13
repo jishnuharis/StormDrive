@@ -1123,8 +1123,8 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
         [InlineKeyboardButton("✏️ Rename", callback_data=f"rename_file:{message_id}"),
          InlineKeyboardButton("🔀 Move", callback_data=f"pick_move_file:{message_id}")],
         [InlineKeyboardButton("📋 Duplicate", callback_data=f"do_duplicate:{message_id}"),
-         InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
-        [InlineKeyboardButton("✏️ Set Type", callback_data=f"set_type:{message_id}")],
+         InlineKeyboardButton("✏️ Type", callback_data=f"set_type:{message_id}")],
+        [InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
         [InlineKeyboardButton("◀ Back", callback_data=back_cb),
          InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
