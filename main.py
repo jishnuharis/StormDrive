@@ -1979,8 +1979,23 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     file_size: int | None = None
     if message.document:
-        file_type, filename = "document", resolve_filename(message, f"file_{copied.message_id}")
+        filename = resolve_filename(message, f"file_{copied.message_id}")
         file_size = message.document.file_size
+        # Try magic byte detection first, fall back to extension, then "document"
+        file_type = "document"
+        try:
+            import magic as _magic
+            tg_file = await context.bot.get_file(message.document.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            mime = _magic.from_buffer(bytes(file_bytes[:1024]), mime=True)
+            detected = _mime_to_type(mime)
+            if detected:
+                file_type = detected
+        except Exception:
+            # magic not available or download failed — try extension
+            ext_type = classify_by_extension(filename)
+            if ext_type != "other":
+                file_type = ext_type
     elif message.photo:
         file_type, filename = "photo", resolve_filename(message, f"photo_{copied.message_id}.jpg")
         file_size = message.photo[-1].file_size if message.photo else None
@@ -2000,6 +2015,9 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         file_size = message.sticker.file_size
     else:
         return WAIT_STORE_FILE
+
+    # Strip extension from display name — type is already detected above
+    filename = Path(filename).stem or filename
 
     db = load_db()
     record: dict = {
