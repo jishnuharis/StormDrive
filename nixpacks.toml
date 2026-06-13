@@ -1,5 +1,5 @@
 [phases.setup]
 aptPkgs = ["libmagic-dev", "file"]
 
-[phases.build]
-cmds = ["ldconfig -p | grep libmagic || echo 'LIBMAGIC NOT FOUND'"]
+[start]
+cmd = ". /opt/venv/bin/activate && python3 main.py"
