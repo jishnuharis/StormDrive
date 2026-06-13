@@ -1124,6 +1124,7 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
          InlineKeyboardButton("🔀 Move", callback_data=f"pick_move_file:{message_id}")],
         [InlineKeyboardButton("📋 Duplicate", callback_data=f"do_duplicate:{message_id}"),
          InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
+        [InlineKeyboardButton("✏️ Set Type", callback_data=f"set_type:{message_id}")],
         [InlineKeyboardButton("◀ Back", callback_data=back_cb),
          InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
@@ -1800,12 +1801,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return ConversationHandler.END
 
+    if data.startswith("set_type:"):
+        msg_id = int(data.split(":", 1)[1])
+        type_buttons = [
+            [InlineKeyboardButton(f"{TYPE_EMOJI.get(t, '📄')} {t.capitalize()}", callback_data=f"confirm_set_type:{msg_id}:{t}")]
+            for t in ("video", "audio", "image", "document", "archive", "app", "code", "font")
+        ]
+        type_buttons.append([InlineKeyboardButton("◀ Back", callback_data=f"file_action:{msg_id}")])
+        await query.edit_message_text(
+            "✏️ <b>Set File Type</b>\n\nChoose the correct type for this file:",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(type_buttons),
+        )
+        return ConversationHandler.END
+
+    if data.startswith("confirm_set_type:"):
+        _, msg_id_str, new_type = data.split(":", 2)
+        msg_id = int(msg_id_str)
+        db = load_db()
+        item = db.get(str(msg_id))
+        if not item:
+            await query.answer("⚠️ File not found.", show_alert=True)
+            return ConversationHandler.END
+        item["type"] = new_type
+        save_db(db)
+        await query.answer(f"✅ Type set to {new_type}", show_alert=False)
+        await show_file_action_panel(query, update.effective_user.id, msg_id)
+        return ConversationHandler.END
+
     return ConversationHandler.END
-
-
-# ---------------------------------------------------------------------------
-# Conversation: create folder
-# ---------------------------------------------------------------------------
 
 async def receive_new_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
@@ -1981,27 +2005,28 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if message.document:
         filename = resolve_filename(message, f"file_{copied.message_id}")
         file_size = message.document.file_size
-        # Try magic byte detection first, fall back to extension, then "document"
-        file_type = "document"
-        try:
-            import magic as _magic
-            import httpx
-            tg_file = await context.bot.get_file(message.document.file_id)
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(
-                    tg_file.file_path,
-                    headers={"Range": "bytes=0-1023"},
-                    timeout=10,
-                )
-            mime = _magic.from_buffer(bytes(resp.content), mime=True)
-            detected = _mime_to_type(mime)
-            if detected:
-                file_type = detected
-        except Exception:
-            # magic not available or download failed — try extension
-            ext_type = classify_by_extension(filename)
-            if ext_type != "other":
-                file_type = ext_type
+        # Extension first, magic bytes only if no extension
+        file_type = "other"
+        ext_type = classify_by_extension(filename)
+        if ext_type not in ("other", "document"):
+            file_type = ext_type
+        else:
+            try:
+                import magic as _magic
+                import httpx
+                tg_file = await context.bot.get_file(message.document.file_id)
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(
+                        tg_file.file_path,
+                        headers={"Range": "bytes=0-1023"},
+                        timeout=10,
+                    )
+                mime = _magic.from_buffer(bytes(resp.content), mime=True)
+                detected = _mime_to_type(mime)
+                if detected:
+                    file_type = detected
+            except Exception:
+                pass  # stay as "document"
     elif message.photo:
         file_type, filename = "photo", resolve_filename(message, f"photo_{copied.message_id}.jpg")
         file_size = message.photo[-1].file_size if message.photo else None
