@@ -1,5 +1,2 @@
 [phases.setup]
-aptPkgs = ["libmagic-dev", "file"]
-
-[start]
-cmd = "/opt/venv/bin/python main.py"
+nixPkgs = ["file"]
