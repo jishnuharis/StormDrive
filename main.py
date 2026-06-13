@@ -2226,10 +2226,13 @@ async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     try:
         import magic as _magic
-    except ImportError:
+    except ImportError as e:
+        import sys
         await update.message.reply_text(
-            "⚠️ <code>python-magic</code> is not installed.\n"
-            "Add <code>python-magic</code> to <code>requirements.txt</code> and redeploy.",
+            f"⚠️ <code>python-magic</code> import failed.\n"
+            f"Error: <code>{e}</code>\n"
+            f"Python: <code>{sys.executable}</code>\n"
+            f"Path: <code>{sys.path}</code>",
             parse_mode="HTML",
         )
         return
@@ -2257,6 +2260,7 @@ async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     bot = context.bot
     updated = 0
     failed = 0
+    failed_reasons: list[str] = []
     last_edit = _time.time()
 
     for i, (key, item) in enumerate(targets, 1):
@@ -2270,8 +2274,10 @@ async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             if detected and detected != "document":
                 item["type"] = detected
                 updated += 1
-        except Exception:
+        except Exception as e:
             failed += 1
+            if len(failed_reasons) < 3:
+                failed_reasons.append(f"{item.get('filename', key)}: {e}")
 
         now = _time.time()
         if now - last_edit >= 1.0:
@@ -2288,12 +2294,13 @@ async def reclassify_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if updated:
         save_db(db)
 
+    reasons_text = "\n" + "\n".join(f"• <code>{r}</code>" for r in failed_reasons) if failed_reasons else ""
     await status_msg.edit_text(
         f"✅ <b>Reclassification complete!</b>\n\n"
         f"Processed: <b>{total}</b> files\n"
         f"Updated: <b>{updated}</b> types changed\n"
         f"Unchanged: <b>{total - updated - failed}</b>\n"
-        f"Failed: <b>{failed}</b>",
+        f"Failed: <b>{failed}</b>{reasons_text}",
         parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(
             [[InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]]
