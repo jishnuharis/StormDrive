@@ -1051,7 +1051,7 @@ async def show_combined_view(query, user_id: int) -> None:
             )])
         extra.append(menu_row)
         await query.edit_message_text(
-            f"📂 <b>{_esc(format_breadcrumb(path))}</b>\n\n<i>This folder is empty</i>\n\nStore files here or navigate back{_MSG_PAD}",
+            f"📂 <b>{_esc(format_breadcrumb(path))}</b>\n\n<i>This folder is empty</i>\n\nReady to store your files here. Create subfolders to organize.{_MSG_PAD}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup(extra),
         )
@@ -1175,7 +1175,7 @@ async def show_combined_view(query, user_id: int) -> None:
             parts.append(folder_count_label)
         if files:
             parts.append(file_count_label)
-        suffix = "\n\n🔵 Tap files to select." if multiselect else "\n\n👆 Tap a file or folder below"
+        suffix = "\n\nMultiple files selected for batch operations." if multiselect else "\n\nOrganize your content with folders and files."
         text = f"📂 <b>{_esc(format_breadcrumb(path))}</b>\n\n{', '.join(parts) if parts else 'Empty folder'}{suffix}{_MSG_PAD}"
 
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
@@ -1239,7 +1239,7 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
         f"📁 Location: {_esc(folder)}\n"
         f"🗓 Stored: {_esc(stored)}\n"
         f"{'⭐ Marked favourite' if fav else '☆ Not marked'}\n\n"
-        f"<i>Choose an action below</i>{_MSG_PAD}",
+        f"<i>Retrieve, move, copy, or delete this file</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1277,7 +1277,7 @@ async def show_multi_action_panel(query, user_id: int) -> int:
          InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
-        f"☑️ <b>{len(items)} file(s) selected</b>\n\n<b>Selected:</b>\n{names}\n\n<i>Choose action below</i>{_MSG_PAD}",
+        f"☑️ <b>{len(items)} file(s) selected</b>\n\n<b>Selected:</b>\n{names}\n\n<i>Delete, copy, move, or mark these files</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1320,7 +1320,7 @@ async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
         f"  Files here: {direct_files} | Total: {tree_files}\n"
         f"  Subfolders: {sub_count}\n"
         f"  Latest: {newest}\n\n"
-        f"<i>Use buttons below to manage this folder</i>{_MSG_PAD}",
+        f"<i>View files, explore subfolders, or rename items</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
