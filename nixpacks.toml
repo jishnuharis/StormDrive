@@ -1,2 +1,5 @@
 [phases.setup]
 aptPkgs = ["libmagic-dev", "file"]
+
+[phases.build]
+cmds = ["ldconfig -p | grep libmagic || echo 'LIBMAGIC NOT FOUND'"]
