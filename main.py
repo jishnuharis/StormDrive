@@ -909,8 +909,7 @@ async def show_folder_list(query, user_id: int) -> None:
                 f"📂 View {total_files} file{'s' if total_files != 1 else ''} here",
                 callback_data="action:view_files",
             )])
-        # Only show rename button when actively browsing folders, not when returning from file list
-        if path != "Root" and state.get("view") == "folders":
+        if path != "Root":
             top.append([InlineKeyboardButton("✏️ Rename this folder", callback_data="action:rename_this_folder")])
     elif mode in ("delete",) and total_files:
         top.insert(0, [InlineKeyboardButton(
@@ -1479,7 +1478,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── back to folder list ───────────────────────────────────────────────────
     if data == "action:back_folders":
         state["page"] = 0
-        state["view"] = "folders"
         # Go up to parent folder
         current = normalize_path(state.get("path", "Root"))
         if "/" in current:
@@ -1487,18 +1485,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         else:
             state["path"] = "Root"
         if state["mode"] == "store":
+            state["view"] = "folders"
             await show_folder_list(query, user_id)
             return WAIT_STORE_FILE
         if state["mode"] == "move_file":
+            state["view"] = "folders"
             await show_folder_list(query, user_id)
             return WAIT_MOVE_FILE_DST
         if state["mode"] == "move_folder":
+            state["view"] = "folders"
             await show_folder_list(query, user_id)
             return WAIT_MOVE_DEST
         if state["mode"] == "copy_file":
+            state["view"] = "folders"
             await show_folder_list(query, user_id)
             return WAIT_COPY_DST
-        await show_folder_list(query, user_id)
+        # For rename — return to folder list (rename navigates via show_folder_list)
+        if state["mode"] == "rename":
+            state["view"] = "folders"
+            await show_folder_list(query, user_id)
+            return ConversationHandler.END
+        # For retrieve and delete — show combined view of the parent folder
+        # (consistent with how entering a folder via "Browse folder" works)
+        state["view"] = "files"
+        await show_combined_view(query, user_id)
         return ConversationHandler.END
 
     # ── back to file list ─────────────────────────────────────────────────────
