@@ -541,7 +541,7 @@ def build_paginated_keyboard(
 ) -> InlineKeyboardMarkup:
     total_pages = max(1, (len(items) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
-    keyboard = list(extra_top_rows or [])
+    keyboard = [row for row in (extra_top_rows or []) if row]
     chunk = items[page * PAGE_SIZE: page * PAGE_SIZE + PAGE_SIZE]
     for label, cb in chunk:
         keyboard.append([InlineKeyboardButton(label, callback_data=cb)])
@@ -555,7 +555,8 @@ def build_paginated_keyboard(
     if nav:
         keyboard.append(nav)
     for row in extra_bottom_rows or []:
-        keyboard.append(row)
+        if row:
+            keyboard.append(row)
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -997,7 +998,7 @@ async def show_combined_view(query, user_id: int) -> None:
     _next_sort = {"newest": "oldest", "oldest": "alpha", "alpha": "newest"}
     _sort_label = {"newest": "🕐 Newest", "oldest": "🕑 Oldest", "alpha": "🔤 A→Z"}
 
-    back_row = [InlineKeyboardButton("◀ Back", callback_data="action:back_folders")]
+    back_row = [InlineKeyboardButton("◀ Back", callback_data="action:back_folders")] if path != "Root" else []
     menu_row = [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]
 
     folder_label_fn = lambda name: (f"📁 {name}", f"cd:{name}")
@@ -1005,7 +1006,7 @@ async def show_combined_view(query, user_id: int) -> None:
     folder_count_label = f"{len(subfolders)} subfolder{'s' if len(subfolders) != 1 else ''}"
 
     if not subfolders and not files:
-        extra: list[list] = [back_row]
+        extra: list[list] = [back_row] if back_row else []
         if mode == "delete":
             extra.append([InlineKeyboardButton(
                 "🗑 Delete empty folder", callback_data="action:delete_this_folder"
