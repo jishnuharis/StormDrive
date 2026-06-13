@@ -629,6 +629,7 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
         "rename_target": None,
         "rename_folder_path": None,
         "move_target": None,
+        "move_targets": None,
         "move_folder_path": None,
         "copy_source": None,
         "search_items": None,
@@ -636,6 +637,7 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
         "multiselect": False,
         "selected_files": set(),
         "copy_sources": None,
+        "last_paste_dest": "Root",
     }
 
 
@@ -902,7 +904,12 @@ async def show_folder_list(query, user_id: int) -> None:
                 f"✏️ Rename a file ({total_files})", callback_data="action:view_files"
             )])
     elif mode == "move_file":
-        if state.get("move_target") is not None:
+        if state.get("move_targets"):
+            n = len(state["move_targets"])
+            top.append([InlineKeyboardButton(
+                f"📂 Move {n} file(s) here", callback_data="action:move_here"
+            )])
+        elif state.get("move_target") is not None:
             db2 = load_db()
             fitem = db2.get(str(state["move_target"]), {})
             fname = fitem.get("filename", "file")
@@ -1077,8 +1084,22 @@ async def show_combined_view(query, user_id: int) -> None:
 
     elif mode == "move_file":
         move_target = state.get("move_target")
+        move_targets = state.get("move_targets")
         folder_items = [(f"📁 {name}", f"cd:{name}") for name in subfolders]
-        if move_target is None:
+        if move_targets:
+            file_items = [(f"{file_type_emoji(f.get('type', 'other'))} {f['filename']}", "noop") for f in files]
+            all_items = folder_items + file_items
+            top_rows = [
+                [InlineKeyboardButton(f"📂 Move {len(move_targets)} file(s) here", callback_data="action:move_here")],
+                back_row,
+            ]
+            kb = build_paginated_keyboard(all_items, page, extra_top_rows=top_rows, extra_bottom_rows=[menu_row])
+            text = (
+                f"🔀 Moving {len(move_targets)} file(s)\n\n"
+                f"Destination: <b>{_esc(format_breadcrumb(path))}</b>\n\n"
+                "Tap 'Move here' to confirm, or navigate to a subfolder:"
+            )
+        elif move_target is None:
             file_items = [
                 (f"🔀 {file_type_emoji(f.get('type', 'other'))} {f['filename']}",
                  f"pick_move_file:{f['message_id']}")
@@ -1245,7 +1266,8 @@ async def show_multi_action_panel(query, user_id: int) -> int:
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📤 Retrieve all ({len(items)})", callback_data="action:multi_retrieve")],
         [InlineKeyboardButton("⭐ Favourite / ☆ Unfavourite", callback_data="action:multi_fav")],
-        [InlineKeyboardButton("📋 Copy", callback_data="action:multi_copy")],
+        [InlineKeyboardButton("📋 Copy", callback_data="action:multi_copy"),
+         InlineKeyboardButton("🔀 Move", callback_data="action:multi_move")],
         [InlineKeyboardButton("🗑 Delete", callback_data="action:multi_delete")],
         [InlineKeyboardButton("◀ Back", callback_data="action:multi_back"),
          InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
@@ -1613,6 +1635,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await show_combined_view(query, user_id)
         return ConversationHandler.END
 
+    # ── go to the folder a file was just copied/moved into ───────────────────
+    if data == "action:goto_pasted":
+        state["path"] = state.get("last_paste_dest", "Root")
+        state["page"] = 0
+        state["view"] = "files"
+        await show_combined_view(query, user_id)
+        return ConversationHandler.END
+
     # ── back to search results ────────────────────────────────────────────────
     if data == "action:back_search":
         items = state.get("search_items") or []
@@ -1764,6 +1794,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state["view"] = "folders"
         await show_folder_list(query, user_id)
         return WAIT_COPY_DST
+
+    # ── multiselect: move all → pick destination ─────────────────────────────
+    if data == "action:multi_move":
+        selected = state.get("selected_files") or set()
+        if not selected:
+            await query.answer("⚠️ No files selected.", show_alert=True)
+            return ConversationHandler.END
+        state["move_targets"] = list(selected)
+        state["move_target"] = None
+        state["mode"] = "move_file"
+        state["path"] = "Root"
+        state["page"] = 0
+        state["view"] = "folders"
+        await show_folder_list(query, user_id)
+        return WAIT_MOVE_FILE_DST
 
     # ── retrieve file ─────────────────────────────────────────────────────────
     if data.startswith("do_retrieve:"):
@@ -1941,6 +1986,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         fname = item.get("filename", f"ID {msg_id}")
         state["move_target"] = msg_id
+        state["move_targets"] = None
         state["mode"] = "move_file"
         state["path"] = "Root"
         state["page"] = 0
@@ -1950,6 +1996,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # ── move file: drop here ──────────────────────────────────────────────────
     if data == "action:move_here":
+        move_targets = state.get("move_targets")
+        dest_path = normalize_path(state.get("path", "Root"))
+
+        if move_targets:
+            db = load_db()
+            moved = 0
+            first_src_folder = None
+            for msg_id in move_targets:
+                item = db.get(str(msg_id))
+                if not item:
+                    continue
+                src_folder = normalize_path(item.get("folder", "Root"))
+                if first_src_folder is None:
+                    first_src_folder = src_folder
+                item["folder"] = dest_path
+                moved += 1
+            save_db(db)
+            state["move_targets"] = None
+            state["move_target"] = None
+            state["mode"] = "retrieve"
+            state["multiselect"] = False
+            state["selected_files"] = set()
+            state["path"] = parent_path(first_src_folder or "Root")
+            state["last_paste_dest"] = dest_path
+            state["page"] = 0
+            state["view"] = "files"
+            await query.answer(f"✅ Moved {moved} file(s)!", show_alert=False)
+            await query.edit_message_text(
+                f"✅ <b>Moved successfully</b> — {moved} file(s)\n\n"
+                f"To: {_esc(format_breadcrumb(dest_path))}",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
+                    [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
+                ]),
+            )
+            return ConversationHandler.END
+
         move_target = state.get("move_target")
         if not move_target:
             await query.answer("⚠️ No file selected.", show_alert=True)
@@ -1961,13 +2045,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             await query.answer("⚠️ File no longer exists.", show_alert=True)
             state["move_target"] = None
             return ConversationHandler.END
-        old_folder = format_breadcrumb(item.get("folder", "Root"))
+        old_folder_path = normalize_path(item.get("folder", "Root"))
+        old_folder = format_breadcrumb(old_folder_path)
         fname = item.get("filename", f"ID {move_target}")
         item["folder"] = dest_path
         save_db(db)
         state["move_target"] = None
         state["mode"] = "retrieve"
-        state["path"] = parent_path(dest_path)
+        state["path"] = parent_path(old_folder_path)
+        state["last_paste_dest"] = dest_path
         state["page"] = 0
         state["view"] = "files"
         await query.answer("✅ Moved!", show_alert=False)
@@ -1978,7 +2064,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"To:   {_esc(format_breadcrumb(dest_path))}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
+                [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ]),
         )
@@ -2093,7 +2179,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["mode"] = "retrieve"
             state["multiselect"] = False
             state["selected_files"] = set()
-            state["path"] = parent_path(dest_path)
+            first_src = db.get(str(copy_sources[0])) if copy_sources else None
+            src_folder_path = normalize_path((first_src or {}).get("folder", "Root"))
+            state["path"] = parent_path(src_folder_path)
+            state["last_paste_dest"] = dest_path
             state["page"] = 0
             state["view"] = "files"
             await query.answer(f"📋 Copied {len(results)} file(s)!", show_alert=False)
@@ -2107,7 +2196,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 f"In: {_esc(format_breadcrumb(dest_path))}",
                 parse_mode="HTML",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
+                    [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
                     [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
                 ]),
             )
@@ -2134,6 +2223,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         orig_name = src_item.get("filename", f"file_{src_id}")
         file_type = src_item.get("type", "other")
+        src_folder_path = normalize_path(src_item.get("folder", "Root"))
         # Always check for a name collision in the destination folder,
         # whether it's the source folder or a different one.
         new_name = _unique_copy_name(db, orig_name, file_type, dest_path)
@@ -2149,7 +2239,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         save_db(db)
         state["copy_source"] = None
         state["mode"] = "retrieve"
-        state["path"] = parent_path(dest_path)
+        state["path"] = parent_path(src_folder_path)
+        state["last_paste_dest"] = dest_path
         state["page"] = 0
         state["view"] = "files"
         await query.answer("📋 Copied!", show_alert=False)
@@ -2160,7 +2251,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             f"In: {_esc(format_breadcrumb(dest_path))}",
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📂 Back to folder", callback_data="action:back_files")],
+                [InlineKeyboardButton("📂 Back to folder", callback_data="action:goto_pasted")],
                 [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
             ]),
         )
