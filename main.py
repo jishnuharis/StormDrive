@@ -655,10 +655,10 @@ def _home_menu_text() -> str:
         f"📄 Files: <b>{total_files:,}</b>\n"
         f"📁 Folders: <b>{max(total_folders, 0):,}</b>\n\n"
         f"📂 One place for everything you want to keep.\n"
-        f"🔐 Private  •  v4  •  @super_storm5\n\n"
+        f"🔐 Private Vault\n\n"
         f"🕐 {datetime.now(IST).strftime('%d %b %Y, %I:%M %p')} IST\n"
         f"⚙️ Uptime: {_uptime_str()}\n\n"
-        f"🤖 <i>Created by and for</i>  •  <i>@super_storm5</i>\n\n"
+        f"🤖 <i>Created by and for</i>  •  @super_storm5\n\n"
         "Choose an action:"
     )
 
