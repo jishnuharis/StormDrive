@@ -837,8 +837,7 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     kb_items = [
         (
-            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}\n"
-            f"\u2514 📁 {format_breadcrumb(r.get('folder', 'Root'))}",
+            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}",
             f"file_action:{r['message_id']}",
         )
         for r in items
@@ -897,8 +896,7 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     items = [
         (
-            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}\n"
-            f"\u2514 📁 {format_breadcrumb(r.get('folder', 'Root'))}",
+            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}",
             f"file_action:{r['message_id']}",
         )
         for r in results
@@ -1532,8 +1530,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         kb_items = [
             (
-                f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}\n"
-                f"\u2514 📁 {format_breadcrumb(r.get('folder', 'Root'))}",
+                f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}",
                 f"file_action:{r['message_id']}",
             )
             for r in items
@@ -1563,7 +1560,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         kb_items = [
             (
-                f"⭐ {f['filename']}\n\u2514 📁 {format_breadcrumb(f.get('folder', 'Root'))}",
+                f"⭐ {f['filename']}",
                 f"file_action:{f['message_id']}",
             )
             for f in favs
