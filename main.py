@@ -69,7 +69,7 @@ DB_FILE = _DB_PATH
 DB_TMP_FILE = _DB_DIR / "metadata.tmp.json"
 BACKUP_COUNT = 5
 PAGE_SIZE = 10
-RECENT_N = 15
+RECENT_N = 10
 IST = timezone(timedelta(hours=5, minutes=30))
 _BOT_START_TIME = _time_module.time()
 _MSG_PAD = "\u200b\u200c\u200d" * 5  # Invisible padding for message height
