@@ -626,6 +626,17 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _uptime_str() -> str:
+    elapsed = int(_time_module.time() - _BOT_START_TIME)
+    h, rem = divmod(elapsed, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    elif m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 def _home_menu_text() -> str:
     """Build the main menu header with live file/folder counts."""
     db = load_db()
@@ -638,10 +649,16 @@ def _home_menu_text() -> str:
         for i in range(len(parts)):
             folder_paths.add("/".join(parts[:i + 1]))
     total_folders = len(folder_paths) - 1  # exclude Root
+    _PAD = "\u2007" * 38  # figure spaces — invisible width padding
     return (
-        f"📦 <b>Archive Vault</b>\n\n"
+        f"📦 <b>Archive Vault</b>{_PAD}\n\n"
         f"📄 Files: <b>{total_files:,}</b>\n"
         f"📁 Folders: <b>{max(total_folders, 0):,}</b>\n\n"
+        f"📂 One place for everything you want to keep.\n"
+        f"🔐 Private  •  v4  •  @super_storm5\n\n"
+        f"🕐 {datetime.now(IST).strftime('%d %b %Y, %I:%M %p')} IST\n"
+        f"⚙️ Uptime: {_uptime_str()}\n\n"
+        f"🤖 <i>Created by and for</i>  •  <i>@super_storm5</i>\n\n"
         "Choose an action:"
     )
 
@@ -735,7 +752,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await deny(update);
         return ConversationHandler.END
     user_state.pop(update.effective_user.id, None)
-    await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu_keyboard())
+    _PAD = "\u2007" * 38
+    await update.message.reply_text(f"❌ Cancelled.{_PAD}", reply_markup=main_menu_keyboard())
     return ConversationHandler.END
 
 
@@ -1345,7 +1363,6 @@ async def show_multi_action_panel(query, user_id: int) -> int:
     return ConversationHandler.END
 
 
-
 async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     """Folder info card: file count, subfolder count, newest file, actions."""
     state = user_state.get(user_id, {})
@@ -1436,6 +1453,7 @@ async def show_storage_explorer(query, user_id: int) -> int:
         reply_markup=InlineKeyboardMarkup(kb_rows),
     )
     return ConversationHandler.END
+
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
