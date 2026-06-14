@@ -415,6 +415,31 @@ def db_stats_full(db: dict) -> str:
     return "\n".join(lines)
 
 
+def folder_tree_size(db: dict, folder_path: str) -> int:
+    """Total file_size (bytes) of everything in folder_path and its subtree."""
+    folder_path = normalize_path(folder_path)
+    prefix = folder_path + "/"
+    total = 0
+    for item in db.values():
+        fp = normalize_path(item.get("folder", "Root"))
+        if fp == folder_path or fp.startswith(prefix):
+            total += item.get("file_size", 0) or 0
+    return total
+
+
+def type_size_breakdown_for_path(db: dict, folder_path: str) -> dict[str, int]:
+    """Map effective_type -> total size in bytes, for files in folder_path's subtree."""
+    folder_path = normalize_path(folder_path)
+    prefix = folder_path + "/"
+    sizes: dict[str, int] = {}
+    for item in db.values():
+        fp = normalize_path(item.get("folder", "Root"))
+        if fp == folder_path or fp.startswith(prefix):
+            t = effective_type(item)
+            sizes[t] = sizes.get(t, 0) + (item.get("file_size", 0) or 0)
+    return sizes
+
+
 EXT_TYPE_MAP = {
     # video
     ".mp4": "video", ".mkv": "video", ".mov": "video", ".avi": "video",
@@ -583,16 +608,42 @@ def build_paginated_keyboard(
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store", callback_data="mode:store"),
-         InlineKeyboardButton("📤 Traverse", callback_data="mode:retrieve")],
-        [InlineKeyboardButton("🗑 Delete", callback_data="mode:delete"),
-         InlineKeyboardButton("✏️ Rename", callback_data="mode:rename")],
-        [InlineKeyboardButton("🔍 Search", callback_data="action:search"),
-         InlineKeyboardButton("📊 Stats", callback_data="action:stats")],
+        [InlineKeyboardButton("⭐ Favourites", callback_data="action:favourites"),
+         InlineKeyboardButton("🔍 Search", callback_data="action:search")],
+
         [InlineKeyboardButton("📋 Recent", callback_data="action:recent"),
-         InlineKeyboardButton("⭐ Favourites", callback_data="action:favourites")],
-        [InlineKeyboardButton("💾 Disk Report", callback_data="action:disk")],
+         InlineKeyboardButton("📂 Browse", callback_data="mode:retrieve")],
+
+        [InlineKeyboardButton("📥 Store", callback_data="mode:store"),
+         InlineKeyboardButton("🗑 Delete", callback_data="mode:delete")],
+
+        [InlineKeyboardButton("✏️ Rename", callback_data="mode:rename"),
+         InlineKeyboardButton("📊 Stats", callback_data="action:stats")],
+
+        [InlineKeyboardButton("📦 Storage Explorer", callback_data="action:storage_explorer")],
+
+        [InlineKeyboardButton("💾 Disk Report", callback_data="action:disk")]
     ])
+
+
+def _home_menu_text() -> str:
+    """Build the main menu header with live file/folder counts."""
+    db = load_db()
+    total_files = len(db)
+    # Count unique folder paths (excluding Root itself)
+    folder_paths: set[str] = set()
+    for item in db.values():
+        fp = normalize_path(item.get("folder", "Root"))
+        parts = fp.split("/")
+        for i in range(len(parts)):
+            folder_paths.add("/".join(parts[:i + 1]))
+    total_folders = len(folder_paths) - 1  # exclude Root
+    return (
+        f"📦 <b>Archive Vault</b>\n\n"
+        f"📄 Files: <b>{total_files:,}</b>\n"
+        f"📁 Folders: <b>{max(total_folders, 0):,}</b>\n\n"
+        "Choose an action:"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +690,7 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
         "selected_files": set(),
         "copy_sources": None,
         "last_paste_dest": "Root",
+        "storage_path": "Root",
     }
 
 
@@ -658,7 +710,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ConversationHandler.END
     user_state.pop(update.effective_user.id, None)
     await update.message.reply_text(
-        "📦 <b>Archive Bot</b>\n\nWhat would you like to do?",
+        _home_menu_text(),
         parse_mode="HTML",
         reply_markup=main_menu_keyboard(),
     )
@@ -671,7 +723,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return ConversationHandler.END
     user_state.pop(update.effective_user.id, None)
     await update.message.reply_text(
-        "📦 <b>Archive Bot</b>\n\nWhat would you like to do?",
+        _home_menu_text(),
         parse_mode="HTML",
         reply_markup=main_menu_keyboard(),
     )
@@ -767,8 +819,8 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     kb_items = [
         (
-            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}  "
-            f"[{format_breadcrumb(r.get('folder', 'Root'))}]",
+            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}\n"
+            f"\u2514 📁 {format_breadcrumb(r.get('folder', 'Root'))}",
             f"file_action:{r['message_id']}",
         )
         for r in items
@@ -827,8 +879,8 @@ async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
     items = [
         (
-            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}  "
-            f"[{format_breadcrumb(r.get('folder', 'Root'))}]",
+            f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}\n"
+            f"\u2514 📁 {format_breadcrumb(r.get('folder', 'Root'))}",
             f"file_action:{r['message_id']}",
         )
         for r in results
@@ -1170,13 +1222,18 @@ async def show_combined_view(query, user_id: int) -> None:
             extra_top_rows=top_rows,
             extra_bottom_rows=bottom_rows
         )
-        parts = []
-        if subfolders:
-            parts.append(folder_count_label)
-        if files:
-            parts.append(file_count_label)
-        suffix = "\n\nMultiple files selected for batch operations." if multiselect else "\n\nOrganize your content with folders and files."
-        text = f"📂 <b>{_esc(format_breadcrumb(path))}</b>\n\n{', '.join(parts) if parts else 'Empty folder'}{suffix}{_MSG_PAD}"
+        # Build a clean folder display name (last segment, not full breadcrumb)
+        _display_name = normalize_path(path).rsplit("/", 1)[-1]
+        stats_line = ""
+        if subfolders or files:
+            _stat_parts = []
+            if subfolders:
+                _stat_parts.append(f"📁 {len(subfolders)} folder{'s' if len(subfolders) != 1 else ''}")
+            if files:
+                _stat_parts.append(f"📄 {len(files)} file{'s' if len(files) != 1 else ''}")
+            stats_line = "\n" + "\n".join(_stat_parts)
+        suffix = "\n\nMultiple files selected for batch operations." if multiselect else "\n\nSelect a folder or file:"
+        text = f"📂 <b>{_esc(_display_name)}</b>{stats_line}{suffix}{_MSG_PAD}"
 
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -1193,9 +1250,10 @@ async def show_store_prompt(query, user_id: int) -> int:
         [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
     ])
     await query.edit_message_text(
-        f"📁 <b>{_esc(format_breadcrumb(path))}</b>\n\n"
-        "Send file(s) — you can send many in a row.\n"
-        "<i>Supported: documents, photos, videos, audio, voice messages, stickers.</i>",
+        f"📥 <b>Uploading to:</b>\n\n"
+        f"📁 {_esc(format_breadcrumb(path))}\n\n"
+        "Send one or more files.\n"
+        "<i>Captions will be used as filename. Supported: documents, photos, videos, audio, voice messages, stickers.</i>",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1218,6 +1276,8 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
     emoji = file_type_emoji(ftype)
     fav_btn = "⭐ Unfavourite" if fav else "☆ Favourite"
     fav_cb = f"unfav_file:{message_id}" if fav else f"fav_file:{message_id}"
+    file_size = item.get("file_size")
+    size_line = f"📦 {_fmt_bytes(file_size)}\n" if file_size else ""
 
     state = user_state.get(user_id, {})
     # If we came from search, back should return to search results
@@ -1236,9 +1296,10 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
     ])
     await query.edit_message_text(
         f"{emoji} <b>{_esc(fname)}</b>\n\n"
-        f"📁 Location: {_esc(folder)}\n"
-        f"🗓 Stored: {_esc(stored)}\n"
-        f"{'⭐ Marked favourite' if fav else '☆ Not marked'}\n\n"
+        f"{size_line}"
+        f"📁 {_esc(folder)}\n"
+        f"🗓 {_esc(stored[:10] if stored != 'unknown' else stored)}\n"
+        f"{'⭐ Favourite' if fav else '☆ Not marked'}\n\n"
         f"<i>Retrieve, move, copy, or delete this file</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
@@ -1327,9 +1388,54 @@ async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     return ConversationHandler.END
 
 
-# ---------------------------------------------------------------------------
-# Main button handler
-# ---------------------------------------------------------------------------
+_STORAGE_TYPE_ORDER = ["video", "image", "document", "audio", "archive", "app", "code", "font", "other", "voice", "sticker", "photo"]
+
+
+async def show_storage_explorer(query, user_id: int) -> int:
+    """Show storage usage breakdown by type and by folder for the current storage path."""
+    state = user_state.setdefault(user_id, _fresh_state())
+    db = load_db()
+    path = normalize_path(state.get("storage_path", "Root"))
+
+    type_sizes = type_size_breakdown_for_path(db, path)
+    lines: list[str] = [f"📊 <b>Storage Usage</b>\n📁 {_esc(format_breadcrumb(path))}\n"]
+
+    if type_sizes:
+        lines.append("<b>By type:</b>")
+        for t in sorted(type_sizes, key=lambda x: -type_sizes[x]):
+            sz = type_sizes[t]
+            if sz <= 0:
+                continue
+            lines.append(f"{TYPE_EMOJI.get(t, '📄')} {t.capitalize():<10} {_fmt_bytes(sz)}")
+    else:
+        lines.append("<i>No sized files here yet.</i>")
+
+    subfolders = get_subfolders_for_path(db, path)
+    folder_sizes = []
+    for name in subfolders:
+        full = normalize_path(f"{path}/{name}")
+        folder_sizes.append((name, folder_tree_size(db, full)))
+    folder_sizes.sort(key=lambda x: -x[1])
+
+    kb_rows = []
+    if folder_sizes:
+        lines.append("\n<b>Folders:</b>")
+        for name, sz in folder_sizes:
+            lines.append(f"📁 {_esc(name):<10} {_fmt_bytes(sz)}")
+            kb_rows.append([InlineKeyboardButton(f"📁 {name}  ({_fmt_bytes(sz)})", callback_data=f"storage_cd:{name}")])
+
+    nav_row = []
+    if path != "Root":
+        nav_row.append(InlineKeyboardButton("⬆ Up", callback_data="storage_up"))
+    nav_row.append(InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu"))
+    kb_rows.append(nav_row)
+
+    await query.edit_message_text(
+        "\n".join(lines) + _MSG_PAD,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(kb_rows),
+    )
+    return ConversationHandler.END
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -1358,7 +1464,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "action:menu":
         user_state.pop(user_id, None)
         await query.edit_message_text(
-            "📦 <b>Archive Bot</b>\n\nWhat would you like to do?",
+            _home_menu_text(),
             parse_mode="HTML",
             reply_markup=main_menu_keyboard(),
         )
@@ -1377,6 +1483,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return ConversationHandler.END
 
+    # ── storage explorer (inline) ────────────────────────────────────────────
+    if data == "action:storage_explorer":
+        state["storage_path"] = "Root"
+        return await show_storage_explorer(query, user_id)
+
+    if data.startswith("storage_cd:"):
+        name = data.split(":", 1)[1]
+        current = normalize_path(state.get("storage_path", "Root"))
+        state["storage_path"] = normalize_path(f"{current}/{name}")
+        return await show_storage_explorer(query, user_id)
+
+    if data == "storage_up":
+        current = normalize_path(state.get("storage_path", "Root"))
+        state["storage_path"] = parent_path(current)
+        return await show_storage_explorer(query, user_id)
+
     # ── recent (inline) ───────────────────────────────────────────────────────
     if data == "action:recent":
         db = load_db()
@@ -1392,8 +1514,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         kb_items = [
             (
-                f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}  "
-                f"[{format_breadcrumb(r.get('folder', 'Root'))}]",
+                f"{file_type_emoji(r.get('type', 'document'))} {r['filename']}\n"
+                f"\u2514 📁 {format_breadcrumb(r.get('folder', 'Root'))}",
                 f"file_action:{r['message_id']}",
             )
             for r in items
@@ -1423,7 +1545,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         kb_items = [
             (
-                f"⭐ {f['filename']}  [{format_breadcrumb(f.get('folder', 'Root'))}]",
+                f"⭐ {f['filename']}\n\u2514 📁 {format_breadcrumb(f.get('folder', 'Root'))}",
                 f"file_action:{f['message_id']}",
             )
             for f in favs
@@ -2951,13 +3073,13 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     rrect(PAD, cy, W - PAD, cy + sh)
     label(PAD + u(12), cy + u(9), f"file type breakdown  -  {len(db)} total")
     DOT_COLORS = [ACCENT, TEAL, AMBER, GREEN, (236, 72, 153), (251, 146, 60)]
-    type_order = sorted(type_counts.items(), key=lambda x: -x[1])
+    type_order = sorted(type_counts.items(), key=lambda x: -type_sizes.get(x[0], 0))
     total_files = len(db) or 1
     total_known_size = sum(type_sizes.values()) or 1
     seg_x = PAD + u(12)
     bar_w = W - PAD * 2 - u(24)
     for idx2, (t, cnt) in enumerate(type_order):
-        seg_w = max(u(2), int(bar_w * cnt / total_files))
+        seg_w = max(u(2), int(bar_w * type_sizes.get(t, 0) / total_known_size))
         rrect(seg_x, cy + u(24), seg_x + seg_w, cy + u(30), r=u(3), fill=DOT_COLORS[idx2 % len(DOT_COLORS)])
         seg_x += seg_w
     ry = cy + u(38)
@@ -2971,7 +3093,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         draw.text((col_x + u(14), row_y), f"{t.capitalize()}", font=F11, fill=TEXT2)
         sz = type_sizes.get(t)
         size_str = f"  {_fmt_bytes(sz)}" if sz else ""
-        pct_str = f"{cnt / total_files * 100:.0f}%"
+        pct_str = f"{sz / total_known_size * 100:.0f}%" if sz else f"{cnt / total_files * 100:.0f}%"
         draw.text((col_x + u(14) + u(72), row_y), f"{cnt} ({pct_str}){size_str}", font=F11, fill=TEXT1)
     cy += sh + GAP
 
