@@ -49,7 +49,7 @@ main.py
 ├── Command handlers     (/start /menu /search /recent /stats /help …)
 ├── Inline button router (button_handler dispatches all callback queries)
 ├── Disk report renderer (Pillow-based PNG dashboard)
-└── Archive group guard  (ChatMemberHandler auto-kicks intruders)
+└── Archive group guard  (ChatMemberHandler auto-kicks intruders for security)
 ```
 
 The bot uses **python-telegram-bot v20+** (async) and stores all metadata in a local `metadata.json` file. The actual files are forwarded to and stored in the Telegram archive group; the bot only keeps the `message_id` pointers.
