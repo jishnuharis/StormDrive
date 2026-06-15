@@ -1,32 +1,3 @@
-"""
-Archive Bot — v4
-Changes from uploaded version:
-  FIXED:
-    - /help crash: switched to HTML parse_mode, no more Markdown special-char breakage
-    - Subfolder rename: cd: in rename mode now drills down (folders stay navigable);
-      rename_folder: only fires when user taps the rename-icon button, not cd:
-    - Move mode cd: now correctly shows folder list (not file list)
-    - pick_move no longer double-edits the message (removed the dead first edit)
-    - "Rename this folder" hidden at Root level
-    - /cancel properly resets move_target and all pending ops
-    - Sort preference preserved across folder navigation (not reset on mode change)
-    - Back-from-file-action returns to search results when view=="search"
-    - Stats (inline + command) shows full recursive breakdown
-    - Folder-info panel added (tap folder in retrieve mode)
-    - "Rename this folder" button also available in retrieve mode (not just rename mode)
-  REMOVED:
-    - /migrate_ist command and migrate_ist_command function
-    - migrate_ist from set_commands and help text
-    (IST timezone is still used for all timestamps; auto-migration at startup is kept)
-  ADDED:
-    - /recent — last 15 stored files with quick retrieve
-    - ⭐ Favourite / pin files — shows at top of folder, accessible via Favourites view
-    - Folder move — move an entire folder tree to a new parent
-    - Folder info panel — file count, subfolder count, newest file date
-    - Full recursive stats breakdown
-    - WAIT_MOVE_DEST conversation state (so /cancel works during move)
-"""
-
 from __future__ import annotations
 
 import json
@@ -82,9 +53,9 @@ WAIT_STORE_FILE = 2
 WAIT_RENAME_INPUT = 3
 WAIT_RENAME_FOLDER = 4
 WAIT_SEARCH_INPUT = 5
-WAIT_MOVE_DEST = 6  # navigating to folder-move destination
-WAIT_MOVE_FILE_DST = 7  # navigating to file-move destination
-WAIT_COPY_DST = 8  # navigating to copy destination
+WAIT_MOVE_DEST = 6
+WAIT_MOVE_FILE_DST = 7
+WAIT_COPY_DST = 8
 
 # ---------------------------------------------------------------------------
 # In-memory user state
@@ -133,7 +104,6 @@ def _try_parse(path: Path) -> dict | None:
 
 
 def _migrate_timestamps_to_ist(data: dict) -> tuple[dict, int]:
-    """Shift any UTC/naive timestamps to IST. Idempotent."""
     changed = 0
     for item in data.values():
         ts = item.get("stored_at", "")
@@ -199,10 +169,6 @@ def _now_iso() -> str:
 
 
 def _copy_name(db: dict, base_name: str, file_type: str, folder: str) -> str:
-    """
-    Generate a copy name like 'invoice (1)', 'invoice (2)' etc.
-    Counts existing files in the same folder with the same base name and type.
-    """
     folder = normalize_path(folder)
     count = sum(
         1 for v in db.values()
@@ -214,11 +180,6 @@ def _copy_name(db: dict, base_name: str, file_type: str, folder: str) -> str:
 
 
 def _unique_copy_name(db: dict, base_name: str, file_type: str, dest_path: str) -> str:
-    """
-    Return a filename safe to use in dest_path: if base_name (same type) doesn't
-    already exist there, keep it as-is; otherwise append ' (n)' with the next
-    free number, regardless of whether dest_path is the source folder or not.
-    """
     dest_path = normalize_path(dest_path)
     existing = {
         v.get("filename", "")
@@ -304,10 +265,6 @@ def rename_folder_in_db(db: dict, old_path: str, new_path: str) -> int:
 
 
 def move_folder_in_db(db: dict, old_path: str, new_parent: str) -> tuple[int, str]:
-    """
-    Move folder old_path under new_parent.
-    Returns (records_updated, new_full_path).
-    """
     old_path = normalize_path(old_path)
     new_parent = normalize_path(new_parent)
     folder_name = old_path.rsplit("/", 1)[-1]
@@ -354,20 +311,14 @@ def resolve_filename(message: Message, fallback: str) -> str:
 
 
 def db_stats_full(db: dict) -> str:
-    """
-    Return a full recursive stats string.
-    Walks every unique folder path and shows file count + subfolder count.
-    """
     if not db:
         return "  (empty)"
 
-    # Build a set of all folder paths that actually have files
     folder_file_counts: dict[str, int] = {}
     for item in db.values():
         fp = normalize_path(item.get("folder", "Root"))
         folder_file_counts[fp] = folder_file_counts.get(fp, 0) + 1
 
-    # Collect all unique folder paths (including ancestors)
     all_folders: set[str] = set()
     for fp in folder_file_counts:
         parts = fp.split("/")
@@ -375,9 +326,8 @@ def db_stats_full(db: dict) -> str:
             all_folders.add("/".join(parts[:i + 1]))
 
     total_files = len(db)
-    total_folders = len(all_folders) - 1  # exclude Root itself
+    total_folders = len(all_folders) - 1
 
-    # Build lines: show folders depth-first, indented
     def _children(parent: str) -> list[str]:
         prefix = parent + "/"
         direct = set()
@@ -391,7 +341,6 @@ def db_stats_full(db: dict) -> str:
     lines: list[str] = [
         f"Total: <b>{total_files}</b> files in <b>{total_folders}</b> folder(s)\n"
     ]
-    root_direct = len(folder_file_counts.get("Root", 0) and [1] or [])
     root_files = folder_file_counts.get("Root", 0)
 
     def _recurse(folder: str, depth: int) -> None:
@@ -400,7 +349,6 @@ def db_stats_full(db: dict) -> str:
         direct_files = folder_file_counts.get(folder, 0)
         tree_files = count_all_in_tree(db, folder)
         children = _children(folder)
-        sub_count = len(children)
         suffix = f" ({tree_files} total)" if tree_files != direct_files else ""
         lines.append(f"{indent}📁 <b>{name}</b>: {direct_files} file(s){suffix}")
         for child in children:
@@ -416,7 +364,6 @@ def db_stats_full(db: dict) -> str:
 
 
 def folder_tree_size(db: dict, folder_path: str) -> int:
-    """Total file_size (bytes) of everything in folder_path and its subtree."""
     folder_path = normalize_path(folder_path)
     prefix = folder_path + "/"
     total = 0
@@ -428,7 +375,6 @@ def folder_tree_size(db: dict, folder_path: str) -> int:
 
 
 def type_size_breakdown_for_path(db: dict, folder_path: str) -> dict[str, int]:
-    """Map effective_type -> total size in bytes, for files in folder_path's subtree."""
     folder_path = normalize_path(folder_path)
     prefix = folder_path + "/"
     sizes: dict[str, int] = {}
@@ -505,11 +451,6 @@ def classify_by_extension(filename: str) -> str:
 
 
 def effective_type(item: dict) -> str:
-    """
-    Returns the best available type for a DB record.
-    For non-document Telegram types (video/audio/photo/voice/sticker),
-    trust Telegram directly. For 'document', refine using the filename extension.
-    """
     stored = item.get("type", "document")
     if stored != "document":
         return stored
@@ -517,7 +458,7 @@ def effective_type(item: dict) -> str:
     ext_type = classify_by_extension(filename)
     if ext_type != "other":
         return ext_type
-    return stored  # stay as "document" if extension gives nothing
+    return stored
 
 
 def file_type_emoji(file_type: str) -> str:
@@ -525,7 +466,6 @@ def file_type_emoji(file_type: str) -> str:
 
 
 def _esc(text: str) -> str:
-    """Escape HTML special chars for safe inclusion in HTML parse_mode messages."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
@@ -638,18 +578,16 @@ def _uptime_str() -> str:
 
 
 def _home_menu_text() -> str:
-    """Build the main menu header with live file/folder counts."""
     db = load_db()
     total_files = len(db)
-    # Count unique folder paths (excluding Root itself)
     folder_paths: set[str] = set()
     for item in db.values():
         fp = normalize_path(item.get("folder", "Root"))
         parts = fp.split("/")
         for i in range(len(parts)):
             folder_paths.add("/".join(parts[:i + 1]))
-    total_folders = len(folder_paths) - 1  # exclude Root
-    _PAD = "\u2007" * 38  # figure spaces — invisible width padding
+    total_folders = len(folder_paths) - 1
+    _PAD = "\u2007" * 38
     return (
         f"📦 <b>Archive Vault</b>{_PAD}\n\n"
         f"📄 Files: <b>{total_files:,}</b>\n"
@@ -702,7 +640,7 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
         "move_folder_path": None,
         "copy_source": None,
         "search_items": None,
-        "sort_order": sort_order,  # preserved on mode change
+        "sort_order": sort_order,
         "multiselect": False,
         "selected_files": set(),
         "copy_sources": None,
@@ -712,7 +650,6 @@ def _fresh_state(mode: str = "retrieve", sort_order: str = "newest") -> dict:
 
 
 def _inherit_state(user_id: int, mode: str) -> dict:
-    """Create a fresh state for a new mode but preserve sort_order."""
     old = user_state.get(user_id, {})
     return _fresh_state(mode, old.get("sort_order", "newest"))
 
@@ -721,7 +658,7 @@ def _inherit_state(user_id: int, mode: str) -> dict:
 # Commands
 # ---------------------------------------------------------------------------
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def start(update: Update) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -734,7 +671,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def menu_command(update: Update) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -747,7 +684,7 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     return ConversationHandler.END
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def cancel(update: Update) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -757,10 +694,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_command(update: Update) -> None:
     if not authorized(update):
         return await deny(update)
-    # Use HTML to avoid Markdown v1 parse errors
     await update.message.reply_text(
         "📖 <b>Archive Bot — Help</b>\n\n"
         "<b>Commands:</b>\n"
@@ -804,7 +740,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def stats_command(update: Update) -> None:
     if not authorized(update):
         return await deny(update)
     db = load_db()
@@ -818,7 +754,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def recent_command(update: Update) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -854,7 +790,7 @@ async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 
-async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def search_command(update: Update) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -870,7 +806,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return WAIT_SEARCH_INPUT
 
 
-async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def receive_search_query(update: Update) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -937,16 +873,9 @@ async def show_folder_list(query, user_id: int) -> None:
         n = count_all_in_tree(db, full)
         return f"📁 {name}  ({n})" if n else f"📁 {name}"
 
-    # In rename mode, folders are navigable (cd:) AND each has an individual rename button.
-    # The cd: callback drills down; rename_folder: fires the rename prompt.
-    # We show BOTH by putting each folder as a cd: item, and add an
-    # "✏️ Rename this folder" for the CURRENT folder at the top.
-    # (rename_folder_item: is a separate callback for subfolder rename from list)
     if mode == "rename":
-        # cd: navigates in; rename_folder_item: renames that subfolder directly
         items = [(folder_label(name), f"cd:{name}") for name in children]
     elif mode in ("move_folder",):
-        # navigating to drop destination
         items = [(folder_label(name), f"cd:{name}") for name in children]
     else:
         items = [(folder_label(name), f"cd:{name}") for name in children]
@@ -959,15 +888,12 @@ async def show_folder_list(query, user_id: int) -> None:
         top.append([InlineKeyboardButton("📥 Store here", callback_data="action:store_here")])
         top.append([InlineKeyboardButton("➕ New Folder", callback_data="action:new_folder")])
     elif mode == "rename":
-        # Show current folder's rename button (hidden at Root)
         if path != "Root":
             top.append([InlineKeyboardButton("✏️ Rename this folder", callback_data="action:rename_this_folder")])
-        # Show rename buttons for each child subfolder
         if children:
             top.append([InlineKeyboardButton(
                 "⬇ Tap subfolder name to enter it, or:", callback_data="noop"
             )])
-        # File renaming in rename mode
         if total_files:
             top.insert(0, [InlineKeyboardButton(
                 f"✏️ Rename a file ({total_files})", callback_data="action:view_files"
@@ -1004,7 +930,6 @@ async def show_folder_list(query, user_id: int) -> None:
         mfp = state.get("move_folder_path")
         if mfp:
             mname = normalize_path(mfp).rsplit("/", 1)[-1]
-            # Cannot move into itself or a descendant
             if not normalize_path(path).startswith(normalize_path(mfp)):
                 top.append([InlineKeyboardButton(
                     f"📁 Move '{_esc(mname[:20])}' here", callback_data="action:move_folder_here"
@@ -1072,7 +997,6 @@ async def show_folder_list(query, user_id: int) -> None:
 
 
 async def show_combined_view(query, user_id: int) -> None:
-    """Unified folder view: subfolders on top, files below, all paginated together."""
     db = load_db()
     state = user_state.setdefault(user_id, _fresh_state())
     state["view"] = "files"
@@ -1084,7 +1008,6 @@ async def show_combined_view(query, user_id: int) -> None:
     subfolders = get_subfolders_for_path(db, path)
     files = get_files_in_folder(db, path)
 
-    # Sort files only — subfolders always stay on top
     if sort_order == "newest":
         files_fav = [f for f in files if f.get("favourite")]
         files_rest = [f for f in files if not f.get("favourite")]
@@ -1107,9 +1030,7 @@ async def show_combined_view(query, user_id: int) -> None:
     back_row = [InlineKeyboardButton("◀ Back", callback_data="action:back_folders")] if path != "Root" else []
     menu_row = [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")]
 
-    folder_label_fn = lambda name: (f"📁 {name}", f"cd:{name}")
     file_count_label = f"{len(files)} file{'s' if len(files) != 1 else ''}"
-    folder_count_label = f"{len(subfolders)} subfolder{'s' if len(subfolders) != 1 else ''}"
 
     if not subfolders and not files:
         extra: list[list] = [back_row] if back_row else []
@@ -1197,7 +1118,6 @@ async def show_combined_view(query, user_id: int) -> None:
             )
 
     else:
-        # retrieve — sort toggle + combined view
         multiselect = state.get("multiselect", False)
         selected = state.get("selected_files") or set()
         sort_row = [InlineKeyboardButton(
@@ -1238,7 +1158,6 @@ async def show_combined_view(query, user_id: int) -> None:
             extra_top_rows=top_rows,
             extra_bottom_rows=bottom_rows
         )
-        # Build a clean folder display name (last segment, not full breadcrumb)
         _display_name = normalize_path(path).rsplit("/", 1)[-1]
         stats_line = ""
         if subfolders or files:
@@ -1277,7 +1196,6 @@ async def show_store_prompt(query, user_id: int) -> int:
 
 
 async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
-    """Per-file action card: retrieve, rename, move, delete, duplicate, favourite."""
     db = load_db()
     item = db.get(str(message_id))
     if not item:
@@ -1296,7 +1214,6 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
     size_line = f"📦 {_fmt_bytes(file_size)}\n" if file_size else ""
 
     state = user_state.get(user_id, {})
-    # If we came from search, back should return to search results
     back_cb = "action:back_search" if state.get("view") == "search" else "action:back_files"
 
     kb = InlineKeyboardMarkup([
@@ -1324,7 +1241,6 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
 
 
 async def show_multi_action_panel(query, user_id: int) -> int:
-    """Action card for a multi-selected set of files: retrieve, favourite, copy, delete."""
     state = user_state.setdefault(user_id, _fresh_state())
     db = load_db()
     selected = state.get("selected_files") or set()
@@ -1362,11 +1278,8 @@ async def show_multi_action_panel(query, user_id: int) -> int:
 
 
 async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
-    """Folder info card: file count, subfolder count, newest file, actions."""
     state = user_state.get(user_id, {})
-    # NOTE: the cd: handler already advanced state["path"] to this folder's
-    # full path before calling us — do NOT append folder_name again here,
-    # or every nested view ends up duplicated (e.g. Root/Videos/Videos).
+
     full_path = normalize_path(state.get("path", "Root"))
     db = load_db()
 
@@ -1375,7 +1288,6 @@ async def show_folder_info_panel(query, user_id: int, folder_name: str) -> int:
     subfolders = get_subfolders_for_path(db, full_path)
     sub_count = len(subfolders)
 
-    # Newest file in tree
     tree_items = [i for i in db.values()
                   if normalize_path(i.get("folder", "Root")).startswith(full_path)
                   or normalize_path(i.get("folder", "Root")) == full_path]
@@ -1407,7 +1319,6 @@ _STORAGE_TYPE_ORDER = ["video", "image", "document", "audio", "archive", "app", 
 
 
 async def show_storage_explorer(query, user_id: int) -> int:
-    """Show storage usage breakdown by type and by folder for the current storage path."""
     state = user_state.setdefault(user_id, _fresh_state())
     db = load_db()
     path = normalize_path(state.get("storage_path", "Root"))
@@ -1686,13 +1597,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
 
         if mode == "rename":
-            # drill down — keep showing folder list so user can rename deeper folders
             state["view"] = "folders"
             await show_folder_list(query, user_id)
             return ConversationHandler.END
 
         if mode in ("move_file", "move_folder", "copy_file"):
-            # Navigate further — always show folder list
             state["view"] = "folders"
             await show_folder_list(query, user_id)
             if mode == "move_file":
@@ -1701,7 +1610,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 return WAIT_COPY_DST
             return WAIT_MOVE_DEST
 
-        # retrieve — show folder info panel first
         return await show_folder_info_panel(query, user_id, folder_name)
 
     # ── enter folder directly into file view (from folder info panel) ─────────
@@ -1737,7 +1645,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # ── back to folder list ───────────────────────────────────────────────────
     if data == "action:back_folders":
         state["page"] = 0
-        # Go up to parent folder
+
         current = normalize_path(state.get("path", "Root"))
         if "/" in current:
             state["path"] = current.rsplit("/", 1)[0]
@@ -1759,13 +1667,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["view"] = "folders"
             await show_folder_list(query, user_id)
             return WAIT_COPY_DST
-        # For rename — return to folder list (rename navigates via show_folder_list)
         if state["mode"] == "rename":
             state["view"] = "folders"
             await show_folder_list(query, user_id)
             return ConversationHandler.END
-        # For retrieve and delete — show combined view of the parent folder
-        # (consistent with how entering a folder via "Browse folder" works)
         state["view"] = "files"
         await show_combined_view(query, user_id)
         return ConversationHandler.END
@@ -1789,7 +1694,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if data == "action:back_source":
         state["page"] = 0
         state["view"] = "files"
-        # state["path"] is already set to parent_path(src_folder_path)
         await show_combined_view(query, user_id)
         return ConversationHandler.END
 
@@ -2165,7 +2069,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["mode"] = "retrieve"
             state["multiselect"] = False
             state["selected_files"] = set()
-            # For multi-move: return to destination (all files are there now)
             state["path"] = dest_path
             state["last_paste_dest"] = dest_path
             state["page"] = 0
@@ -2186,8 +2089,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["move_target"] = None
             return ConversationHandler.END
         old_folder_path = normalize_path(item.get("folder", "Root"))
-        old_folder = format_breadcrumb(old_folder_path)
-        fname = item.get("filename", f"ID {move_target}")
         item["folder"] = dest_path
         save_db(db)
         state["move_target"] = None
@@ -2222,15 +2123,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return ConversationHandler.END
         new_parent = normalize_path(state.get("path", "Root"))
         mfp_norm = normalize_path(mfp)
-        # Guard: cannot move into itself or a child
         if new_parent == mfp_norm or new_parent.startswith(mfp_norm + "/"):
             await query.answer("⚠️ Cannot move a folder into itself.", show_alert=True)
             return ConversationHandler.END
         db = load_db()
         old_display = format_breadcrumb(mfp_norm)
         folder_name_only = mfp_norm.rsplit("/", 1)[-1]
-        new_full = normalize_path(f"{new_parent}/{folder_name_only}")
-        # Collision check
         siblings = get_subfolders_for_path(db, new_parent)
         if folder_name_only in siblings:
             await query.answer(f"⚠️ A folder named '{folder_name_only}' already exists there.", show_alert=True)
@@ -2310,7 +2208,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             state["mode"] = "retrieve"
             state["multiselect"] = False
             state["selected_files"] = set()
-            # For multi-copy: return to destination (all copies are there now)
             state["path"] = dest_path
             state["last_paste_dest"] = dest_path
             state["page"] = 0
@@ -2341,8 +2238,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         orig_name = src_item.get("filename", f"file_{src_id}")
         file_type = src_item.get("type", "other")
         src_folder_path = normalize_path(src_item.get("folder", "Root"))
-        # Always check for a name collision in the destination folder,
-        # whether it's the source folder or a different one.
         new_name = _unique_copy_name(db, orig_name, file_type, dest_path)
         db[str(copied.message_id)] = {
             "filename": new_name,
@@ -2393,6 +2288,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
 
     return ConversationHandler.END
+
 
 async def receive_new_folder_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
@@ -2500,7 +2396,6 @@ async def receive_rename_folder_input(update: Update, context: ContextTypes.DEFA
     parent = parent_path(old_path)
     new_path = normalize_path(f"{parent}/{new_name}")
     db = load_db()
-    # Collision check
     siblings = get_subfolders_for_path(db, parent)
     old_name = old_path.rsplit("/", 1)[-1]
     if new_name in siblings and new_name != old_name:
@@ -2564,11 +2459,9 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await message.reply_text(f"⚠️ Failed to store file: {e}\n\nTry again or /cancel to abort.")
         return WAIT_STORE_FILE
 
-    file_size: int | None = None
     if message.document:
         filename = resolve_filename(message, f"file_{copied.message_id}")
         file_size = message.document.file_size
-        # Extension first, magic bytes only if no extension
         file_type = "other"
         ext_type = classify_by_extension(filename)
         if ext_type not in ("other", "document"):
@@ -2589,7 +2482,7 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 if detected:
                     file_type = detected
             except Exception:
-                pass  # stay as "document"
+                pass
     elif message.photo:
         file_type, filename = "photo", resolve_filename(message, f"photo_{copied.message_id}.jpg")
         file_size = message.photo[-1].file_size if message.photo else None
@@ -2610,7 +2503,6 @@ async def receive_store_file(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         return WAIT_STORE_FILE
 
-    # Strip extension from display name — type is already detected above
     filename = Path(filename).stem or filename
 
     db = load_db()
@@ -2792,11 +2684,9 @@ _MIME_TO_TYPE: dict[str, str] = {
 
 
 def _mime_to_type(mime: str) -> str | None:
-    """Map a MIME string to our type vocabulary. Returns None if unrecognised."""
     mime = mime.lower().split(";")[0].strip()
     if mime in _MIME_TO_TYPE:
         return _MIME_TO_TYPE[mime]
-    # broad fallbacks
     if mime.startswith("video/"):
         return "video"
     if mime.startswith("audio/"):
@@ -2815,7 +2705,6 @@ def _mime_to_type(mime: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 def _fmt_bytes(n) -> str:
-    """Human-readable bytes string."""
     if n is None:
         return "unknown"
     if n >= 1024 ** 3:
@@ -2874,7 +2763,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     bot = context.bot
     db = load_db()
 
-    # 1. Fetch missing file sizes by forwarding archive messages
     missing = [k for k, v in db.items() if "file_size" not in v]
     newly_fetched = 0
     if missing:
@@ -2908,7 +2796,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         if newly_fetched:
             save_db(db)
 
-    # 2. Collect stats
     import os as _os
 
     vol_dir = str(_DB_DIR.resolve())
@@ -2970,8 +2857,7 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
 
     db_path_env = _os.environ.get("DB_PATH")
 
-    # 3. Draw the PNG
-    SCALE = 2  # render at 2x for crisp quality
+    SCALE = 2
     W = 520 * SCALE
     BG = (15, 17, 23)
     CARD = (22, 27, 38)
@@ -3039,7 +2925,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
 
     cy = PAD
 
-    # Header
     sh = active["header"]
     rrect(PAD, cy, W - PAD, cy + sh)
     draw.text((PAD + u(14), cy + u(10)), "Disk Report", font=F20, fill=TEXT1)
@@ -3050,7 +2935,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     draw.text((W - PAD - pw + u(4), cy + u(16)), pill_text, font=F11, fill=(167, 139, 250))
     cy += sh + GAP
 
-    # 3 stat cards
     sh = active["stat_row"]
     cw = (W - PAD * 2 - GAP * 2) // 3
     tg_label = _fmt_bytes(total_tg) + (f" +{unknown_cnt} unk." if unknown_cnt else "")
@@ -3067,7 +2951,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         draw.text((x + u(10), cy + u(46)), sub, font=F10, fill=TEXT3)
     cy += sh + GAP
 
-    # Disk bar
     sh = active["disk_bar"]
     rrect(PAD, cy, W - PAD, cy + sh)
     pct = (used_disk / total_disk * 100) if total_disk else 0
@@ -3083,7 +2966,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     draw.text((bx + bw - u(32), by + u(14)), _fmt_bytes(total_disk), font=F10, fill=TEXT3)
     cy += sh + GAP
 
-    # Type breakdown
     sh = active["types"]
     rrect(PAD, cy, W - PAD, cy + sh)
     label(PAD + u(12), cy + u(9), f"file type breakdown  -  {len(db)} total")
@@ -3112,7 +2994,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         draw.text((col_x + u(14) + u(72), row_y), f"{cnt} ({pct_str}){size_str}", font=F11, fill=TEXT1)
     cy += sh + GAP
 
-    # Top 5 largest
     if top5:
         sh = active["top5"]
         rrect(PAD, cy, W - PAD, cy + sh)
@@ -3127,7 +3008,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
             draw.text((W - PAD - u(12) - int(draw.textlength(sz_str, font=F10)), fy), sz_str, font=F10, fill=ACCENT)
         cy += sh + GAP
 
-    # Oldest / newest
     sh = active["dates"]
     rrect(PAD, cy, W - PAD, cy + sh)
     half_w = (W - PAD * 2 - GAP) // 2
@@ -3144,7 +3024,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
             draw.text((x + u(10), cy + u(24)), "n/a", font=F12, fill=TEXT3)
     cy += sh + GAP
 
-    # Metadata files
     visible_meta = [(p, s) for p, s in meta_info if s is not None]
     sh = active["meta"]
     rrect(PAD, cy, W - PAD, cy + sh)
@@ -3160,7 +3039,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
         my += u(19)
     cy += sh + GAP
 
-    # Backup health
     sh = active["backups"]
     rrect(PAD, cy, W - PAD, cy + sh)
     label(PAD + u(12), cy + u(9), "backup health")
@@ -3181,7 +3059,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     draw.text((PAD + u(12), cy + u(58)), summary, font=F10, fill=TEXT3)
     cy += sh + GAP
 
-    # Footer
     sh = active["footer"]
     db_ok = db_path_env is not None
     db_text = f"DB_PATH  {db_path_env}  OK" if db_ok else "DB_PATH not set  !!  metadata may not be on volume"
@@ -3189,7 +3066,6 @@ async def _send_disk_report(message, context: ContextTypes.DEFAULT_TYPE) -> None
     ts = _now_iso()[:19].replace("T", "  ")
     draw.text((W - PAD - int(draw.textlength(ts, font=F10)) - u(4), cy + u(10)), ts, font=F10, fill=TEXT3)
 
-    # Send
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     buf.seek(0)
