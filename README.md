@@ -1,4 +1,4 @@
-# 📦 Telegram File Archive Bot
+# 📦 StormDrive - A Telegram File Archive Bot
 
 A personal Telegram bot that turns a private group chat into a structured file archive — store, organise, search, and retrieve any file type through an interactive inline keyboard interface.
 
