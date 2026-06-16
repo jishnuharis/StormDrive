@@ -658,7 +658,7 @@ def _inherit_state(user_id: int, mode: str) -> dict:
 # Commands
 # ---------------------------------------------------------------------------
 
-async def start(update: Update) -> int:
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -671,7 +671,7 @@ async def start(update: Update) -> int:
     return ConversationHandler.END
 
 
-async def menu_command(update: Update) -> int:
+async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -694,7 +694,7 @@ async def cancel(update: Update) -> int:
     return ConversationHandler.END
 
 
-async def help_command(update: Update) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return await deny(update)
     await update.message.reply_text(
@@ -740,7 +740,7 @@ async def help_command(update: Update) -> None:
     )
 
 
-async def stats_command(update: Update) -> None:
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not authorized(update):
         return await deny(update)
     db = load_db()
@@ -754,7 +754,7 @@ async def stats_command(update: Update) -> None:
     )
 
 
-async def recent_command(update: Update) -> int:
+async def recent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -790,7 +790,7 @@ async def recent_command(update: Update) -> int:
     return ConversationHandler.END
 
 
-async def search_command(update: Update) -> int:
+async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -806,7 +806,7 @@ async def search_command(update: Update) -> int:
     return WAIT_SEARCH_INPUT
 
 
-async def receive_search_query(update: Update) -> int:
+async def receive_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
