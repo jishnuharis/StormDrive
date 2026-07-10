@@ -2306,20 +2306,52 @@ async def receive_new_folder_name(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("Folder name too long (max 64 chars). Try again:")
         return WAIT_NEW_FOLDER
     state = user_state.setdefault(uid, _fresh_state("store"))
+    mode = state.get("mode", "store")
     current = normalize_path(state.get("path", "Root"))
     new_path = normalize_path(f"{current}/{folder_name}")
     state.update({"path": new_path, "page": 0, "view": "folders", "store_count": 0, "last_btn_msg": None})
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📥 Store here", callback_data="action:store_here")],
-        [InlineKeyboardButton("➕ New Subfolder", callback_data="action:new_folder")],
-        [InlineKeyboardButton("⬆ Up", callback_data="action:up")],
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")],
-    ])
+
+    rows: list[list[InlineKeyboardButton]] = []
+    next_state = WAIT_STORE_FILE
+
+    if mode == "move_file":
+        if state.get("move_targets"):
+            n = len(state["move_targets"])
+            rows.append([InlineKeyboardButton(f"📂 Move {n} file(s) here", callback_data="action:move_here")])
+        elif state.get("move_target") is not None:
+            db2 = load_db()
+            fitem = db2.get(str(state["move_target"]), {})
+            fname = fitem.get("filename", "file")
+            rows.append([InlineKeyboardButton(f"📂 Move '{_esc(fname[:20])}' here", callback_data="action:move_here")])
+        rows.append([InlineKeyboardButton("➕ New Subfolder", callback_data="action:new_folder")])
+        next_state = WAIT_MOVE_FILE_DST
+    elif mode == "copy_file":
+        if state.get("copy_sources"):
+            n = len(state["copy_sources"])
+            rows.append([InlineKeyboardButton(f"📋 Copy {n} file(s) here", callback_data="action:copy_here")])
+        elif state.get("copy_source") is not None:
+            db2 = load_db()
+            fitem = db2.get(str(state["copy_source"]), {})
+            fname = fitem.get("filename", "file")
+            rows.append([InlineKeyboardButton(f"📋 Copy '{_esc(fname[:20])}' here", callback_data="action:copy_here")])
+        rows.append([InlineKeyboardButton("➕ New Subfolder", callback_data="action:new_folder")])
+        next_state = WAIT_COPY_DST
+    else:
+        rows.append([InlineKeyboardButton("📥 Store here", callback_data="action:store_here")])
+        rows.append([InlineKeyboardButton("➕ New Subfolder", callback_data="action:new_folder")])
+        next_state = WAIT_STORE_FILE
+
+    rows.append([InlineKeyboardButton("⬆ Up", callback_data="action:up")])
+    rows.append([InlineKeyboardButton("🏠 Main Menu", callback_data="action:menu")])
+    kb = InlineKeyboardMarkup(rows)
+
     await update.message.reply_text(
-        f"✅ Folder <b>{_esc(format_breadcrumb(new_path))}</b> created.\n\nStore here, add subfolders, or go up:",
+        f"✅ Folder <b>{_esc(format_breadcrumb(new_path))}</b> created.\n\n"
+        + ("Store here, add subfolders, or go up:" if mode == "store"
+           else "Drop it here, add subfolders, or go up:"),
         parse_mode="HTML", reply_markup=kb,
     )
-    return WAIT_STORE_FILE
+    return next_state
 
 
 # ---------------------------------------------------------------------------
