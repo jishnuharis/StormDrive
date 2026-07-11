@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time as _time_module
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -166,6 +167,36 @@ def save_db(data: dict) -> None:
 
 def _now_iso() -> str:
     return datetime.now(IST).isoformat(timespec="seconds")
+
+
+def get_or_create_share_token(db: dict, message_id: int) -> str:
+    """Return this file's existing share token, or mint a new unique one."""
+    item = db[str(message_id)]
+    token = item.get("share_token")
+    if token:
+        return token
+    existing = {v.get("share_token") for v in db.values() if v.get("share_token")}
+    while True:
+        token = secrets.token_urlsafe(6)  # Telegram deep-link payloads allow [A-Za-z0-9_-]
+        if token not in existing:
+            break
+    item["share_token"] = token
+    save_db(db)
+    return token
+
+
+def find_message_id_by_share_token(db: dict, token: str) -> int | None:
+    for mid, item in db.items():
+        if item.get("share_token") == token:
+            return int(mid)
+    return None
+
+
+def revoke_share_token(db: dict, message_id: int) -> None:
+    item = db.get(str(message_id))
+    if item and "share_token" in item:
+        del item["share_token"]
+        save_db(db)
 
 
 def _copy_name(db: dict, base_name: str, file_type: str, folder: str) -> str:
@@ -659,6 +690,25 @@ def _inherit_state(user_id: int, mode: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # ── shared-file deep link: t.me/<bot>?start=f_<token> — open to anyone ─────
+    args = context.args
+    if args and args[0].startswith("f_"):
+        token = args[0][2:]
+        db = load_db()
+        message_id = find_message_id_by_share_token(db, token)
+        if message_id is None:
+            await update.message.reply_text("⚠️ This share link is invalid or has been revoked.")
+            return ConversationHandler.END
+        try:
+            await context.bot.copy_message(
+                chat_id=update.effective_chat.id,
+                from_chat_id=ARCHIVE_CHAT_ID,
+                message_id=message_id,
+            )
+        except Exception:
+            await update.message.reply_text("⚠️ This file is no longer available.")
+        return ConversationHandler.END
+
     if not authorized(update):
         await deny(update);
         return ConversationHandler.END
@@ -1223,7 +1273,8 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
          InlineKeyboardButton("✏️ Type", callback_data=f"set_type:{message_id}")],
         [InlineKeyboardButton("📋 Copy", callback_data=f"pick_copy_file:{message_id}"),
          InlineKeyboardButton("🔀 Move", callback_data=f"pick_move_file:{message_id}")],
-        [InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
+        [InlineKeyboardButton("🔗 Share", callback_data=f"share_file:{message_id}"),
+         InlineKeyboardButton("🗑 Delete", callback_data=f"del_file:{message_id}")],
         [InlineKeyboardButton("◀ Back", callback_data=back_cb),
          InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
     ])
@@ -1233,7 +1284,7 @@ async def show_file_action_panel(query, user_id: int, message_id: int) -> int:
         f"📁 {_esc(folder)}\n"
         f"🗓 {_esc(stored[:10] if stored != 'unknown' else stored)}\n"
         f"{'⭐ Favourite' if fav else '☆ Not marked'}\n\n"
-        f"<i>Retrieve, move, copy, or delete this file</i>{_MSG_PAD}",
+        f"<i>Retrieve, move, copy, share, or delete this file</i>{_MSG_PAD}",
         parse_mode="HTML",
         reply_markup=kb,
     )
@@ -1883,6 +1934,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 ),
             )
         return ConversationHandler.END
+
+    # ── share link ───────────────────────────────────────────────────────────
+    if data.startswith("share_file:"):
+        msg_id = int(data.split(":", 1)[1])
+        db = load_db()
+        item = db.get(str(msg_id))
+        if not item:
+            await query.answer("⚠️ File not found.", show_alert=True)
+            return ConversationHandler.END
+        token = get_or_create_share_token(db, msg_id)
+        bot_username = (await context.bot.get_me()).username
+        link = f"https://t.me/{bot_username}?start=f_{token}"
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Revoke link", callback_data=f"unshare_file:{msg_id}")],
+            [InlineKeyboardButton("◀ Back", callback_data=f"file_action:{msg_id}"),
+             InlineKeyboardButton("🏠 Menu", callback_data="action:menu")],
+        ])
+        await query.edit_message_text(
+            f"🔗 <b>Share link for</b> {_esc(item.get('filename', 'file'))}\n\n"
+            f"{_esc(link)}\n\n"
+            f"<i>Anyone with this link can open the bot and receive this one file — "
+            f"no other access to your archive is granted. Revoke it any time.</i>{_MSG_PAD}",
+            parse_mode="HTML",
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+        return ConversationHandler.END
+
+    if data.startswith("unshare_file:"):
+        msg_id = int(data.split(":", 1)[1])
+        db = load_db()
+        revoke_share_token(db, msg_id)
+        await query.answer("🔒 Share link revoked.", show_alert=False)
+        return await show_file_action_panel(query, user_id, msg_id)
 
     # ── favourite / unfavourite ───────────────────────────────────────────────
     if data.startswith("fav_file:") or data.startswith("unfav_file:"):
